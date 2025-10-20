@@ -1,5 +1,5 @@
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-from sqlalchemy import Date, JSON, Numeric, Text, TIMESTAMP, func
+from sqlalchemy import Date, JSON, Numeric, Text, TIMESTAMP, func, text
 from sqlalchemy.dialects.postgresql import UUID, BIGINT
 import uuid
 from datetime import datetime, date
@@ -11,16 +11,16 @@ class Base(DeclarativeBase):
 
 class User(Base):
     __tablename__ = "users"
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    email: Mapped[str] = mapped_column(Text, unique=True)
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    email: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
     org_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
 
 class DataSource(Base):
     __tablename__ = "data_sources"
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
-    source_name: Mapped[str] = mapped_column(Text, index=True)
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True, nullable=False)
+    source_name: Mapped[str] = mapped_column(Text, index=True, nullable=False)
     account_ref: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     access_token: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     refresh_token: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -31,10 +31,10 @@ class DataSource(Base):
 class Metric(Base):
     __tablename__ = "metrics"
     id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
-    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
-    source_name: Mapped[str] = mapped_column(Text, index=True)
-    metric_date: Mapped[date] = mapped_column(Date, index=True)
-    metric_name: Mapped[str] = mapped_column(Text)
-    metric_value: Mapped[Decimal] = mapped_column(Numeric)
-    meta: Mapped[dict] = mapped_column(JSON, default={})
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True, nullable=False)
+    source_name: Mapped[str] = mapped_column(Text, index=True, nullable=False)
+    metric_date: Mapped[date] = mapped_column(Date, index=True, nullable=False)
+    metric_name: Mapped[str] = mapped_column(Text, nullable=False)
+    metric_value: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    meta: Mapped[dict] = mapped_column(JSON, server_default=text("'{}'::jsonb"))
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())

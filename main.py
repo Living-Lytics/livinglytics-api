@@ -8,6 +8,9 @@ from models import Base, User, Metric
 
 APP_NAME = os.getenv("APP_NAME", "Living Lytics API")
 API_KEY = os.getenv("FASTAPI_SECRET_KEY")
+if not API_KEY:
+    raise RuntimeError("FASTAPI_SECRET_KEY not set")
+
 ALLOW_ORIGINS = [o.strip() for o in os.getenv("ALLOW_ORIGINS", "*").split(",")]
 
 app = FastAPI(title=APP_NAME)
@@ -20,15 +23,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Light connectivity check (won't alter schema)
-with engine.begin() as conn:
-    conn.execute(text("select 1"))
-
 def require_api_key(authorization: str = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing bearer token")
     token = authorization.split(" ", 1)[1]
-    if API_KEY and token != API_KEY:
+    if token != API_KEY:
         raise HTTPException(status_code=403, detail="Invalid token")
 
 @app.get("/v1/health/liveness")
@@ -37,8 +36,22 @@ def liveness():
 
 @app.get("/v1/health/readiness")
 def readiness():
-    ready = bool(API_KEY and os.getenv("DATABASE_URL") and os.getenv("SUPABASE_PROJECT_URL") and os.getenv("SUPABASE_ANON_KEY"))
-    return {"ready": ready}
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("select 1"))
+        db_ready = True
+    except Exception:
+        db_ready = False
+    
+    env_ready = bool(
+        API_KEY and 
+        os.getenv("DATABASE_URL") and 
+        os.getenv("SUPABASE_PROJECT_URL") and 
+        os.getenv("SUPABASE_ANON_KEY")
+    )
+    
+    ready = db_ready and env_ready
+    return {"ready": ready, "database": db_ready, "environment": env_ready}
 
 @app.post("/v1/dev/seed-user", dependencies=[Depends(require_api_key)])
 def seed_user(email: str, db: Session = Depends(get_db)):
