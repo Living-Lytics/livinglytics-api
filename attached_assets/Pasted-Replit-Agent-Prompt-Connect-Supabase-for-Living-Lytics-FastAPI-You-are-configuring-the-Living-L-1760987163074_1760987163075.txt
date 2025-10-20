@@ -1,0 +1,247 @@
+Replit Agent Prompt — Connect Supabase for Living Lytics (FastAPI)
+You are configuring the Living Lytics backend (livinglytics-api) running on Replit.
+Goal: connect to Supabase Postgres using the shared connection pooler (port 6543) with psycopg, seed a minimal schema, add health endpoints, and verify end-to-end connectivity. Make steps idempotent and do not hardcode secrets.
+Context (mirror tutorial, adapted to this project)
+•	We are not using Replit DB; we’re using Supabase.
+•	Collect and use these from Supabase:
+o	SUPABASE_URL (Project → Connect → URL)
+o	SUPABASE_ANON_KEY (same page)
+o	DATABASE_URL → use Connection Pooling (pgBouncer) URI on port 6543 (Project Settings → Database → Connection pooling → URI).
+Format to use in Replit:
+postgresql+psycopg://postgres:<DB_PASSWORD>@<POOLER_HOST>:6543/postgres?sslmode=require
+•	For development, author has email confirmation turned off in Supabase Auth; no need to automate this here—just note it in logs.
+Do this, in order (stop if anything is missing and ask me only for that item)
+1.	Check prerequisites & summarize
+o	Confirm repo is connected (Git panel present).
+o	Print a short plan of actions you’ll take.
+o	Verify the following secrets exist in Replit “Secrets” (don’t create; just validate and, if missing, ask me):
+	DATABASE_URL (pooler on 6543, psycopg, sslmode=require)
+	SUPABASE_URL
+	SUPABASE_ANON_KEY
+	FASTAPI_SECRET_KEY (for simple bearer auth)
+	ALLOW_ORIGINS (comma-separated; default to * if not set — but do not modify secrets)
+2.	Install dependencies
+o	Install exact versions (or nearest stable if pinned not available):
+o	pip install "fastapi==0.*" "uvicorn[standard]==0.*" "sqlalchemy==2.*" "psycopg[binary]==3.*" "python-dotenv==1.*"
+o	Keep Flask if present, but we’ll run FastAPI with uvicorn.
+3.	Project configuration
+o	Ensure .gitignore includes:
+o	.env
+o	__pycache__/
+o	.pythonlibs/
+o	.upm/
+o	Ensure .replit uses uvicorn:
+o	run = "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080}"
+4.	DB layer (psycopg + SQLAlchemy)
+o	Create/overwrite db.py:
+o	import os
+o	from sqlalchemy import create_engine
+o	from sqlalchemy.orm import sessionmaker
+o	
+o	DATABASE_URL = os.getenv("DATABASE_URL")
+o	if not DATABASE_URL:
+o	    raise RuntimeError("DATABASE_URL not set")
+o	
+o	engine = create_engine(
+o	    DATABASE_URL,
+o	    pool_pre_ping=True,
+o	)
+o	
+o	SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+o	
+o	def get_db():
+o	    db = SessionLocal()
+o	    try:
+o	        yield db
+o	    finally:
+o	        db.close()
+o	Create/overwrite models.py:
+o	from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+o	from sqlalchemy import Date, JSON, Numeric, Text, TIMESTAMP, func
+o	from sqlalchemy.dialects.postgresql import UUID, BIGINT
+o	import uuid
+o	
+o	class Base(DeclarativeBase):
+o	    pass
+o	
+o	class User(Base):
+o	    __tablename__ = "users"
+o	    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+o	    email: Mapped[str] = mapped_column(Text, unique=True)
+o	    org_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+o	    created_at: Mapped = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+o	
+o	class DataSource(Base):
+o	    __tablename__ = "data_sources"
+o	    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+o	    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+o	    source_name: Mapped[str] = mapped_column(Text, index=True)
+o	    account_ref: Mapped[str | None] = mapped_column(Text)
+o	    access_token: Mapped[str | None] = mapped_column(Text)
+o	    refresh_token: Mapped[str | None] = mapped_column(Text)
+o	    expires_at: Mapped = mapped_column(TIMESTAMP(timezone=True), nullable=True)
+o	    created_at: Mapped = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+o	    updated_at: Mapped = mapped_column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
+o	
+o	class Metric(Base):
+o	    __tablename__ = "metrics"
+o	    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+o	    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+o	    source_name: Mapped[str] = mapped_column(Text, index=True)
+o	    metric_date: Mapped = mapped_column(Date, index=True)
+o	    metric_name: Mapped[str] = mapped_column(Text)
+o	    metric_value: Mapped = mapped_column(Numeric)
+o	    meta: Mapped = mapped_column(JSON, default={})
+o	    created_at: Mapped = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+5.	Bootstrap schema (SQL, mirrors tutorial’s “use an ORM schema snippet”)
+o	Create/overwrite schema_sql.py (idempotent):
+o	import os
+o	from sqlalchemy import text, create_engine
+o	
+o	DDL = """
+o	create table if not exists users (
+o	  id uuid primary key default gen_random_uuid(),
+o	  email text unique not null,
+o	  org_id uuid,
+o	  created_at timestamptz default now()
+o	);
+o	create table if not exists data_sources (
+o	  id uuid primary key default gen_random_uuid(),
+o	  user_id uuid references users(id),
+o	  source_name text not null,
+o	  account_ref text,
+o	  access_token text,
+o	  refresh_token text,
+o	  expires_at timestamptz,
+o	  created_at timestamptz default now(),
+o	  updated_at timestamptz default now()
+o	);
+o	create table if not exists metrics (
+o	  id bigserial primary key,
+o	  user_id uuid references users(id),
+o	  source_name text not null,
+o	  metric_date date not null,
+o	  metric_name text not null,
+o	  metric_value numeric not null,
+o	  meta jsonb default '{}'::jsonb,
+o	  created_at timestamptz default now()
+o	);
+o	create index if not exists metrics_user_source_date_idx on metrics (user_id, source_name, metric_date);
+o	create index if not exists data_sources_user_source_idx on data_sources (user_id, source_name);
+o	"""
+o	
+o	def main():
+o	    url = os.getenv("DATABASE_URL")
+o	    if not url:
+o	        print("DATABASE_URL not set"); return
+o	    eng = create_engine(url, pool_pre_ping=True)
+o	    with eng.begin() as conn:
+o	        conn.execute(text(DDL))
+o	    print("Schema ensured ✅")
+o	
+o	if __name__ == "__main__":
+o	    main()
+o	Execute once:
+o	python schema_sql.py
+Expect: Schema ensured ✅
+6.	FastAPI app (health + simple data checks)
+o	Create/overwrite main.py:
+o	import os
+o	from fastapi import FastAPI, Depends, HTTPException, Header
+o	from fastapi.middleware.cors import CORSMiddleware
+o	from sqlalchemy import select, func, text
+o	from sqlalchemy.orm import Session
+o	from db import get_db, engine
+o	from models import Base, User, Metric
+o	
+o	APP_NAME = os.getenv("APP_NAME", "Living Lytics API")
+o	API_KEY = os.getenv("FASTAPI_SECRET_KEY")
+o	ALLOW_ORIGINS = [o.strip() for o in os.getenv("ALLOW_ORIGINS", "*").split(",")]
+o	
+o	app = FastAPI(title=APP_NAME)
+o	
+o	app.add_middleware(
+o	    CORSMiddleware,
+o	    allow_origins=ALLOW_ORIGINS if ALLOW_ORIGINS != ["*"] else ["*"],
+o	    allow_credentials=True,
+o	    allow_methods=["*"],
+o	    allow_headers=["*"],
+o	)
+o	
+o	# Light connectivity check (won't alter schema)
+o	with engine.begin() as conn:
+.conn:
+conn.execute(text("select 1"))
+def require_api_key(authorization: str = Header(None)):
+if not authorization or not authorization.startswith("Bearer "):
+raise HTTPException(status_code=401, detail="Missing bearer token")
+token = authorization.split(" ", 1)[1]
+if API_KEY and token != API_KEY:
+raise HTTPException(status_code=403, detail="Invalid token")
+@app.get("/v1/health/liveness")
+def liveness():
+return {"status": "ok"}
+@app.get("/v1/health/readiness")
+def readiness():
+ready = bool(API_KEY and os.getenv("DATABASE_URL") and os.getenv("SUPABASE_URL") and os.getenv("SUPABASE_ANON_KEY"))
+return {"ready": ready}
+@app.post("/v1/dev/seed-user", dependencies=[Depends(require_api_key)])
+def seed_user(email: str, db: Session = Depends(get_db)):
+user = db.execute(select(User).where(User.email == email)).scalar_one_or_none()
+if not user:
+user = User(email=email)
+db.add(user)
+db.commit()
+return {"created": True}
+return {"created": False}
+@app.get("/v1/dashboard/tiles", dependencies=[Depends(require_api_key)])
+def tiles(email: str, db: Session = Depends(get_db)):
+user = db.execute(select(User).where(User.email == email)).scalar_one_or_none()
+if not user:
+raise HTTPException(404, "User not found")
+def agg(name: str):
+return db.execute(
+select(func.coalesce(func.sum(Metric.metric_value), 0)).where(
+Metric.user_id == user.id,
+Metric.metric_name == name
+)
+).scalar() or 0
+return {
+"sessions": float(agg("sessions")),
+"conversions": float(agg("conversions")),
+"ig_reach": float(agg("reach")),
+"engagement": float(agg("engagement")),
+}
+1.	(Optional, mirrors tutorial) Frontend client stub
+o	Create supabase_client.py for potential server-side use of anon key (kept minimal; do not call it yet):
+o	import os
+o	
+o	SUPABASE_URL = os.getenv("SUPABASE_URL")
+o	SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
+o	
+o	if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+o	    # For logging clarity only; do not raise.
+o	    print("Note: SUPABASE_URL / SUPABASE_ANON_KEY not set or not needed server-side right now.")
+o	(If a React client exists later, we’d add a supabase.ts using these vars; not needed for the backend API.)
+2.	Run app
+o	Start:
+o	uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080}
+o	Verify:
+	Liveness:
+	curl -s https://<your-repl>.replit.app/v1/health/liveness
+	Readiness (should be true if all secrets are present):
+	curl -s https://<your-repl>.replit.app/v1/health/readiness
+	Seed user:
+	curl -s -X POST -H "Authorization: Bearer <FASTAPI_SECRET_KEY>" \
+	"https://<your-repl>.replit.app/v1/dev/seed-user?email=demo@livinglytics.app"
+3.	Git
+o	Stage, commit, push:
+	feat: connect Supabase via pooler (psycopg), add schema + health + seed
+	chore: uvicorn run config and .gitignore tweaks
+Deliverables
+•	Working FastAPI app on Replit connected to Supabase via psycopg + pooler (6543).
+•	Files: .replit, db.py, models.py, schema_sql.py, main.py, optionally supabase_client.py.
+•	Health checks passing and simple DB read/write verified.
+•	No hardcoded secrets. If anything is missing, stop and ask only for that item.
+Do not start execution until you verify secrets are present and echo back any missing ones you need from me. Then proceed.
+
