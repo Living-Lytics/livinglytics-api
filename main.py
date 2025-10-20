@@ -1,10 +1,13 @@
 import os
+import json
+import requests
 from fastapi import FastAPI, Depends, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select, func, text
 from sqlalchemy.orm import Session
 from db import get_db, engine
 from models import Base, User, Metric
+from github import Github, GithubException
 
 APP_NAME = os.getenv("APP_NAME", "Living Lytics API")
 API_KEY = os.getenv("FASTAPI_SECRET_KEY")
@@ -29,6 +32,53 @@ def require_api_key(authorization: str = Header(None)):
     token = authorization.split(" ", 1)[1]
     if token != API_KEY:
         raise HTTPException(status_code=403, detail="Invalid token")
+
+def get_github_access_token():
+    """Fetch GitHub access token from Replit connector service."""
+    hostname = os.getenv("REPLIT_CONNECTORS_HOSTNAME")
+    
+    repl_identity = os.getenv("REPL_IDENTITY")
+    web_repl_renewal = os.getenv("WEB_REPL_RENEWAL")
+    
+    if repl_identity:
+        x_replit_token = f"repl {repl_identity}"
+    elif web_repl_renewal:
+        x_replit_token = f"depl {web_repl_renewal}"
+    else:
+        x_replit_token = None
+    
+    if not hostname or not x_replit_token:
+        raise HTTPException(status_code=503, detail="GitHub integration not available in this environment")
+    
+    try:
+        response = requests.get(
+            f"https://{hostname}/api/v2/connection?include_secrets=true&connector_names=github",
+            headers={
+                "Accept": "application/json",
+                "X_REPLIT_TOKEN": x_replit_token
+            },
+            timeout=10
+        )
+        response.raise_for_status()
+        data = response.json()
+        
+        if not data.get("items"):
+            raise HTTPException(status_code=503, detail="GitHub not connected. Please connect GitHub in the integrations panel.")
+        
+        connection = data["items"][0]
+        access_token = connection.get("settings", {}).get("access_token")
+        
+        if not access_token:
+            raise HTTPException(status_code=503, detail="GitHub access token not available")
+        
+        return access_token
+    except requests.RequestException as e:
+        raise HTTPException(status_code=503, detail=f"Failed to fetch GitHub token: {str(e)}")
+
+def get_github_client():
+    """Dependency to get authenticated GitHub client."""
+    token = get_github_access_token()
+    return Github(token)
 
 @app.get("/v1/health/liveness")
 def liveness():
@@ -83,3 +133,73 @@ def tiles(email: str, db: Session = Depends(get_db)):
         "ig_reach": float(agg("reach")),
         "engagement": float(agg("engagement")),
     }
+
+@app.get("/v1/github/user", dependencies=[Depends(require_api_key)])
+def github_user():
+    """Get authenticated GitHub user information."""
+    try:
+        gh = get_github_client()
+        user = gh.get_user()
+        
+        return {
+            "username": user.login,
+            "name": user.name,
+            "email": user.email,
+            "bio": user.bio,
+            "company": user.company,
+            "location": user.location,
+            "public_repos": user.public_repos,
+            "followers": user.followers,
+            "following": user.following,
+            "created_at": user.created_at.isoformat() if user.created_at else None,
+            "avatar_url": user.avatar_url,
+            "html_url": user.html_url
+        }
+    except GithubException as e:
+        message = e.data.get("message", str(e)) if isinstance(e.data, dict) else str(e)
+        raise HTTPException(status_code=e.status, detail=f"GitHub API error: {message}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching GitHub user: {str(e)}")
+
+@app.get("/v1/github/repos", dependencies=[Depends(require_api_key)])
+def github_repos(limit: int = 30):
+    """Get list of GitHub repositories for authenticated user (limited to 100 max)."""
+    limit = min(limit, 100)
+    try:
+        gh = get_github_client()
+        user = gh.get_user()
+        all_repos = user.get_repos(sort="updated", direction="desc")
+        
+        result = []
+        for repo in all_repos:
+            if repo.private:
+                continue
+            if len(result) >= limit:
+                break
+            result.append({
+                "name": repo.name,
+                "full_name": repo.full_name,
+                "description": repo.description,
+                "html_url": repo.html_url,
+                "clone_url": repo.clone_url,
+                "private": repo.private,
+                "fork": repo.fork,
+                "language": repo.language,
+                "stargazers_count": repo.stargazers_count,
+                "forks_count": repo.forks_count,
+                "open_issues_count": repo.open_issues_count,
+                "created_at": repo.created_at.isoformat() if repo.created_at else None,
+                "updated_at": repo.updated_at.isoformat() if repo.updated_at else None,
+                "pushed_at": repo.pushed_at.isoformat() if repo.pushed_at else None
+            })
+        
+        return {
+            "total_public_repos": user.public_repos,
+            "returned_count": len(result),
+            "repositories": result
+        }
+    except GithubException as e:
+        message = e.data.get("message", str(e)) if isinstance(e.data, dict) else str(e)
+        raise HTTPException(status_code=e.status, detail=f"GitHub API error: {message}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching GitHub repos: {str(e)}")

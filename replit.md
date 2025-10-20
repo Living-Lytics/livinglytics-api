@@ -10,6 +10,14 @@ Backend API for Living Lytics – an analytics engine and data integration servi
 **Current State:** Fully connected to Supabase with authentication, health checks, and analytics endpoints
 
 ## Recent Changes
+- **2025-10-20:** GitHub API Integration Complete
+  - Integrated Replit GitHub connector for automatic OAuth and token management
+  - Installed PyGithub library for GitHub API interaction
+  - Added GET /v1/github/user endpoint (authenticated user info)
+  - Added GET /v1/github/repos endpoint (public repositories only, max 100)
+  - Both GitHub endpoints secured with Bearer token authentication
+  - Proper error handling for GitHub API failures and missing connections
+
 - **2025-10-20:** Supabase Integration Complete
   - Connected to Supabase PostgreSQL via connection pooler (port 6543)
   - Installed SQLAlchemy 2.x and psycopg 3.x for database connectivity
@@ -37,6 +45,8 @@ Backend API for Living Lytics – an analytics engine and data integration servi
 - **psycopg 3.x:** PostgreSQL adapter (binary version)
 - **Supabase:** PostgreSQL database hosting with connection pooler
 - **Pydantic:** Data validation using Python type annotations
+- **PyGithub:** Python library for GitHub API v3
+- **Replit GitHub Connector:** Automatic OAuth and token management
 
 ### Project Structure
 ```
@@ -115,7 +125,60 @@ Backend API for Living Lytics – an analytics engine and data integration servi
      }
      ```
 
-5. **GET /docs** - Interactive API documentation
+#### GitHub Integration Endpoints
+5. **GET /v1/github/user**
+   - Returns authenticated GitHub user information
+   - Requires: Bearer token authentication
+   - Response:
+     ```json
+     {
+       "username": "string",
+       "name": "string",
+       "email": "string",
+       "bio": "string",
+       "company": "string",
+       "location": "string",
+       "public_repos": 0,
+       "followers": 0,
+       "following": 0,
+       "created_at": "2025-10-19T19:26:03+00:00",
+       "avatar_url": "string",
+       "html_url": "string"
+     }
+     ```
+
+6. **GET /v1/github/repos**
+   - Returns list of public GitHub repositories for authenticated user
+   - Query parameter: `limit` (integer, default: 30, max: 100)
+   - Requires: Bearer token authentication
+   - Security: Only returns public repositories (private repos filtered out)
+   - Response:
+     ```json
+     {
+       "total_public_repos": 0,
+       "returned_count": 2,
+       "repositories": [
+         {
+           "name": "repo-name",
+           "full_name": "user/repo-name",
+           "description": "Repository description",
+           "html_url": "https://github.com/user/repo-name",
+           "clone_url": "https://github.com/user/repo-name.git",
+           "private": false,
+           "fork": false,
+           "language": "Python",
+           "stargazers_count": 0,
+           "forks_count": 0,
+           "open_issues_count": 0,
+           "created_at": "2025-10-19T19:34:28+00:00",
+           "updated_at": "2025-10-20T22:43:12+00:00",
+           "pushed_at": "2025-10-20T22:43:07+00:00"
+         }
+       ]
+     }
+     ```
+
+7. **GET /docs** - Interactive API documentation
    - Automatically generated Swagger UI documentation
    - Allows testing endpoints directly from the browser
 
@@ -170,6 +233,14 @@ curl -X POST -H "Authorization: Bearer <FASTAPI_SECRET_KEY>" \
 # Get dashboard tiles (requires auth)
 curl -H "Authorization: Bearer <FASTAPI_SECRET_KEY>" \
   "http://localhost:5000/v1/dashboard/tiles?email=demo@livinglytics.app"
+
+# GitHub user info (requires auth)
+curl -H "Authorization: Bearer <FASTAPI_SECRET_KEY>" \
+  "http://localhost:5000/v1/github/user"
+
+# GitHub repositories (requires auth, public repos only)
+curl -H "Authorization: Bearer <FASTAPI_SECRET_KEY>" \
+  "http://localhost:5000/v1/github/repos?limit=10"
 ```
 
 ### Installing Dependencies
@@ -185,6 +256,8 @@ pip install -r requirements.txt
 - sqlalchemy==2.*
 - psycopg[binary]==3.*
 - python-dotenv==1.*
+- PyGithub==2.*
+- requests==2.*
 
 ## Future Enhancements
 - OAuth integrations for data sources (Google Analytics, Instagram, etc.)
@@ -201,3 +274,5 @@ pip install -r requirements.txt
 - Connection pooler preferred over direct connections (port 6543 vs 5432)
 - Bearer token authentication for API security
 - Idempotent schema management approach
+- GitHub integration via Replit connector for automatic OAuth management
+- Public-only data exposure for GitHub endpoints (private repos filtered)
