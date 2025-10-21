@@ -3,9 +3,9 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
 
-DATABASE_URL = os.getenv("DATABASE_URL")
+DATABASE_URL = os.getenv("SUPABASE_CONNECTION_POOLER_URL") or os.getenv("DATABASE_URL")
 if not DATABASE_URL:
-    raise RuntimeError("DATABASE_URL not set")
+    raise RuntimeError("SUPABASE_CONNECTION_POOLER_URL or DATABASE_URL not set")
 
 # Ensure we're using psycopg (not psycopg2) driver
 if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"):

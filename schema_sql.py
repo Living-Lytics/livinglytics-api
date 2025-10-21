@@ -36,9 +36,9 @@ create index if not exists data_sources_user_source_idx on data_sources (user_id
 """
 
 def main():
-    url = os.getenv("DATABASE_URL")
+    url = os.getenv("SUPABASE_CONNECTION_POOLER_URL") or os.getenv("DATABASE_URL")
     if not url:
-        print("DATABASE_URL not set"); return
+        print("SUPABASE_CONNECTION_POOLER_URL or DATABASE_URL not set"); return
     
     # Ensure we're using psycopg (not psycopg2) driver
     if url.startswith("postgresql://") or url.startswith("postgres://"):
