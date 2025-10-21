@@ -195,13 +195,31 @@ The following secrets are required (stored in Replit Secrets):
 - **SUPABASE_PROJECT_URL**: Supabase project URL
 - **SUPABASE_ANON_KEY**: Supabase anonymous key for client-side operations
 - **FASTAPI_SECRET_KEY**: Secret key for API authentication
-- **ALLOW_ORIGINS** (optional): Comma-separated CORS origins (defaults to *)
+- **ALLOW_ORIGINS** (optional): CORS origin configuration (defaults to `*`)
+  - Default: `*` (allows all origins - suitable for development and testing)
+  - **Important:** When set to `*`, cookies and other credentials aren't sent (but Authorization headers still work if explicitly set)
+  - For Production with Base44: Set to any non-`*` value (e.g., `production`) to enable secure CORS
+  - When enabled, automatically allows these specific domains only:
+    - `https://app.base44.com` - Main Base44 platform
+    - `https://*.base44.com` - All Base44 subdomains
+    - `https://*.onrender.com` - Base44 app hosting (backend)
+    - `https://*.replit.app` - Replit deployment URLs
+    - `https://*.repl.co` - Replit development URLs
 - **APP_NAME** (optional): API application name (defaults to "Living Lytics API")
 
 ### Configuration
 - **Host:** 0.0.0.0 (accessible from Replit webview)
 - **Port:** 5000 (Replit standard port, configurable via $PORT)
-- **CORS:** Configurable via ALLOW_ORIGINS environment variable
+- **CORS:** Smart CORS configuration via ALLOW_ORIGINS environment variable
+  - **Development Mode (default):** `ALLOW_ORIGINS=*` - Allows all origins for easy testing
+    - Note: Credentials (Authorization headers) are disabled in this mode per CORS spec
+  - **Production Mode:** Set `ALLOW_ORIGINS` to any non-`*` value to automatically enable Base44 domains
+    - Credentials are enabled (Authorization headers work in browser)
+  - **Automatic Base44 Support:** When production mode is enabled, the API automatically allows:
+    - All Base44 platform domains (`app.base44.com`, `*.base44.com`)
+    - Base44 app hosting infrastructure (`*.onrender.com`)
+    - Replit deployment and development URLs
+  - **Note:** Custom domains outside these patterns are NOT automatically allowed
 - **Auto-reload:** Enabled for development
 - **Database:** Connection pooling via Supabase pgBouncer (port 6543)
 - **SSL Mode:** Required for all database connections

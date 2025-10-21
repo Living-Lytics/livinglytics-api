@@ -14,17 +14,26 @@ API_KEY = os.getenv("FASTAPI_SECRET_KEY")
 if not API_KEY:
     raise RuntimeError("FASTAPI_SECRET_KEY not set")
 
-ALLOW_ORIGINS = [o.strip() for o in os.getenv("ALLOW_ORIGINS", "*").split(",")]
+ALLOW_ORIGINS = os.getenv("ALLOW_ORIGINS", "*")
 
 app = FastAPI(title=APP_NAME)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=ALLOW_ORIGINS if ALLOW_ORIGINS != ["*"] else ["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+if ALLOW_ORIGINS == "*":
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+else:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=r"^https://(app\.base44\.com|([a-z0-9-]+\.)+base44\.com|([a-z0-9-]+\.)+onrender\.com|([a-z0-9-]+\.)+replit\.app|([a-z0-9-]+\.)+repl\.co)$",
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 def require_api_key(authorization: str = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):
