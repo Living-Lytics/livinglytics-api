@@ -99,6 +99,12 @@ Backend API for Living Lytics – an analytics engine and data integration servi
 
 ### API Endpoints
 
+#### Root Endpoint
+0. **GET /**
+   - Friendly welcome message with API docs link
+   - Response: `{"message": "Living Lytics API is running", "docs": "/docs"}`
+   - No authentication required
+
 #### Health Endpoints
 1. **GET /v1/health/liveness**
    - Returns service liveness status
@@ -106,8 +112,8 @@ Backend API for Living Lytics – an analytics engine and data integration servi
    - No authentication required
 
 2. **GET /v1/health/readiness**
-   - Returns service readiness (checks all required secrets)
-   - Response: `{"ready": true}` or `{"ready": false}`
+   - Returns service readiness (checks all required secrets and database connection)
+   - Response: `{"ready": true, "database": true, "environment": true}` or with false values
    - No authentication required
 
 #### Development Endpoints
@@ -118,7 +124,28 @@ Backend API for Living Lytics – an analytics engine and data integration servi
    - Response: `{"created": true}` or `{"created": false}`
 
 #### Analytics Endpoints
-4. **GET /v1/dashboard/tiles**
+4. **POST /v1/metrics/ingest**
+   - Ingest metrics data for a user
+   - Requires: Bearer token authentication
+   - Request body:
+     ```json
+     {
+       "email": "user@example.com",
+       "source_name": "meta",
+       "metric_date": "2025-10-21",
+       "data": {
+         "reach": 1500,
+         "engagement": 62
+       }
+     }
+     ```
+   - Response: `{"ingested": 2, "metrics": ["reach", "engagement"]}`
+   - Notes: 
+     - Accepts multiple metrics in the `data` object
+     - Skips non-numeric values gracefully
+     - Date format must be ISO 8601 (YYYY-MM-DD)
+
+5. **GET /v1/dashboard/tiles**
    - Returns aggregated metrics for dashboard display
    - Query parameter: `email` (string)
    - Requires: Bearer token authentication

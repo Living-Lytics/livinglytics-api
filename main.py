@@ -146,7 +146,7 @@ def ingest_metrics(request: MetricIngestRequest, db: Session = Depends(get_db)):
     except ValueError:
         raise HTTPException(400, "Invalid date format. Use YYYY-MM-DD")
     
-    ingested_count = 0
+    ingested_metrics = []
     for metric_name, metric_value in request.data.items():
         try:
             value = float(metric_value)
@@ -158,12 +158,12 @@ def ingest_metrics(request: MetricIngestRequest, db: Session = Depends(get_db)):
                 metric_value=value
             )
             db.add(metric)
-            ingested_count += 1
+            ingested_metrics.append(metric_name)
         except (ValueError, TypeError):
             continue
     
     db.commit()
-    return {"ingested": ingested_count, "metrics": list(request.data.keys())}
+    return {"ingested": len(ingested_metrics), "metrics": ingested_metrics}
 
 @app.get("/v1/dashboard/tiles", dependencies=[Depends(require_api_key)])
 def tiles(email: str, db: Session = Depends(get_db)):
