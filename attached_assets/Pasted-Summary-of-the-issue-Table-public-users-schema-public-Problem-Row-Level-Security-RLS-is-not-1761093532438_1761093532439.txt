@@ -1,0 +1,67 @@
+Summary of the issue
+Table: public.users (schema: public)
+Problem: Row-Level Security (RLS) is not enabled on a table that is in the public schema (exposed to PostgREST).
+Why this matters: When RLS is disabled on a public-facing table, any role that can access the table (including the anon or authenticated roles used by PostgREST) may be able to read or modify rows the app shouldn't expose. RLS is a core defense in Supabase for per-user / per-tenant access control and is recommended for all user- or sensitive-data tables.
+Risk / Impact
+Potential data leakage: Users may be able to read other users' rows.
+Unauthorized modifications: Inserts/updates/deletes may be allowed when they should be restricted.
+Compliance/security issues for PII or sensitive attributes stored in public.users.
+Increased attack surface if PostgREST endpoints are enabled without policy safeguards.
+Recommended fixes (ordered: minimal → best practice)
+Immediate: Enable RLS on the table
+Run (as a DB owner or service_role):
+SQL Query
+
+
+
+ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
+
+This blocks all access except for superuser/service_role until you add policies, so add policies next.
+Add explicit RLS policies for usual user patterns
+Typical user-ownership policy (allow users to see and modify only their own row):
+SQL Query
+
+
+
+-- Allow authenticated users to SELECT their own row
+CREATE POLICY users_select_own ON public.users
+  FOR SELECT
+  TO authenticated
+  USING ((SELECT auth.uid()) = id);
+
+-- Allow authenticated users to UPDATE their own row
+CREATE POLICY users_update_own ON public.users
+  FOR UPDATE
+  TO authenticated
+  USING ((SELECT auth.uid()) = id)
+  WITH CHECK ((SELECT auth.uid()) = id);
+
+-- Allow authenticated users to INSERT (if you allow user self-create)
+CREATE POLICY users_insert ON public.users
+  FOR INSERT
+  TO anonymous, authenticated
+  WITH CHECK ((SELECT auth.uid()) = id);
+
+Replace id with the correct user-id column (e.g., user_id, auth_user_id) and ensure types align. Use SELECT auth.uid() per Supabase helper usage.
+Restrict public (anon) access explicitly
+Avoid granting broad privileges to anon. If some endpoints must be public, create narrow policies that only permit specific columns/conditions rather than granting table-level access.
+Use service_role for server-side operations only
+Ensure any admin tasks that require bypassing RLS run with the service_role key (never expose it in client code).
+Create helper functions for complex checks (optional, for multi-tenant / org membership)
+Example: a SECURITY DEFINER function to determine the tenant or membership, then reference it inside policies. Revoke execute from anon/authenticated on that function if needed.
+Index columns used in policies
+Add indexes on columns referenced in RLS expressions (e.g., user id, tenant_id) for performance:
+SQL Query
+
+
+
+CREATE INDEX idx_users_id ON public.users (id);
+-- and for tenant: CREATE INDEX idx_users_tenant ON public.users (tenant_id);
+
+Audit and test
+Test with users representing all roles (anon, authenticated, admin) to confirm expected access.
+Review any PostgREST or API routes that expose public.users and lock down endpoints to only return required fields.
+Notes and caveats
+Enabling RLS immediately blocks access until policies permit operations; plan this during maintenance or add policies quickly to avoid service disruption.
+Ensure you use the correct column for matching auth UID (and cast types if needed). Example casting if id is uuid stored as text: ((SELECT auth.uid())::uuid = user_id)
+If you need help generating exact SQL for your schema (column names, tenant model), I can produce tailored statements — I’ll need the table definition. I currently cannot inspect your DB schema without your permission to enable data sharing tools; if you grant that, I can fetch schema details and produce exact SQL.
