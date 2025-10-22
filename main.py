@@ -111,7 +111,7 @@ def readiness():
     
     env_ready = bool(
         API_KEY and 
-        os.getenv("DATABASE_URL") and 
+        (os.getenv("SUPABASE_CONNECTION_POOLER_URL") or os.getenv("DATABASE_URL")) and 
         os.getenv("SUPABASE_PROJECT_URL") and 
         os.getenv("SUPABASE_ANON_KEY")
     )
