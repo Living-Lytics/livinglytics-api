@@ -184,10 +184,10 @@ def tiles(email: str, db: Session = Depends(get_db)):
         ).scalar() or 0
     
     return {
-        "sessions": float(agg("sessions")),
-        "conversions": float(agg("conversions")),
+        "ig_sessions": float(agg("sessions")),
+        "ig_conversions": float(agg("conversions")),
         "ig_reach": float(agg("reach")),
-        "engagement": float(agg("engagement")),
+        "ig_engagement": float(agg("engagement")),
     }
 
 @app.get("/v1/github/user", dependencies=[Depends(require_api_key)])
