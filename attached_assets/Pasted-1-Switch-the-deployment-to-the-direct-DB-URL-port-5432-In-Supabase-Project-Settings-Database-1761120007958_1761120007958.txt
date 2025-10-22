@@ -1,0 +1,93 @@
+1) Switch the deployment to the direct DB URL (port 5432)
+
+In Supabase:
+
+Project Settings → Database → Connection string (URI). Copy the direct connection string (port 5432), not the pooler.
+
+In Replit → Deployments → your Production deployment → Published App Secrets:
+
+Remove SUPABASE_CONNECTION_POOLER_URL (or leave it, but don’t use it).
+
+Add DATABASE_URL with the direct connection string.
+
+Make sure it includes sslmode=require.
+
+Example format:
+
+postgresql+psycopg://<user>:<pass>@<host>:5432/postgres?sslmode=require
+
+
+In your FastAPI code (where you create the engine), make sure you read DATABASE_URL and include:
+
+pool_pre_ping=True (helps avoid stale connections)
+
+connect_args={"sslmode": "require"} (if your URL doesn’t already)
+
+Redeploy the production deployment (don’t just run in Dev).
+
+2) Re-run the 4 quick checks
+
+Replace <KEY> with your FASTAPI secret.
+
+A. Root route
+
+curl -s https://api.livinglytics.com/
+# Expect: {"message":"Living Lytics API is running","docs":"/docs"}
+
+
+B. Readiness
+
+curl -s https://api.livinglytics.com/v1/health/readiness | python -m json.tool
+# Expect: {"ready": true, "database": true, "environment": true}
+
+
+C. Seed user
+
+curl -s -X POST -H "Authorization: Bearer <KEY>" \
+  "https://api.livinglytics.com/v1/dev/seed-user?email=demo@livinglytics.app"
+# Expect 200, created true/false
+
+
+D. Ingest + tiles
+
+curl -s -X POST -H "Authorization: Bearer <KEY>" -H "Content-Type: application/json" \
+  -d '{"email":"demo@livinglytics.app","source_name":"meta","metric_date":"2025-10-21","data":{"reach":1500,"engagement":62}}' \
+  https://api.livinglytics.com/v1/metrics/ingest
+
+curl -s -H "Authorization: Bearer <KEY>" \
+  "https://api.livinglytics.com/v1/dashboard/tiles?email=demo@livinglytics.app" | python -m json.tool
+# Expect non-zero reach/engagement
+
+3) Fix CORS origin to www
+
+You’re on https://www.livinglytics.com
+ (not app.*), so set:
+
+In Replit Published App Secrets (or env):
+ALLOW_ORIGINS=https://www.livinglytics.com
+
+Redeploy the API.
+
+4) Add basic logging (so we can see digest runs)
+
+In main.py (top of file):
+
+import logging
+logging.basicConfig(level=logging.INFO)
+
+
+Redeploy once.
+
+5) Wire the weekly digest (mock first, email later)
+
+Ensure you added the /v1/digest/weekly route (mock summary and logging.info the payload).
+
+In Base44 → Scheduled Functions:
+
+POST https://api.livinglytics.com/v1/digest/weekly?email=demo@livinglytics.app
+
+Headers: Authorization: Bearer <FASTAPI_SECRET_KEY>
+
+Schedule: Mondays 08:00 AM PT
+
+Confirm by checking Replit logs for [WEEKLY DIGEST] ….

@@ -1,5 +1,6 @@
 import os
 import json
+import logging
 import requests
 from datetime import date
 from typing import Dict, Any
@@ -11,6 +12,9 @@ from sqlalchemy.orm import Session
 from db import get_db, engine
 from models import Base, User, Metric
 from github import Github, GithubException
+
+# Configure basic logging
+logging.basicConfig(level=logging.INFO)
 
 APP_NAME = os.getenv("APP_NAME", "Living Lytics API")
 API_KEY = os.getenv("FASTAPI_SECRET_KEY")
@@ -32,7 +36,7 @@ if ALLOW_ORIGINS == "*":
 else:
     app.add_middleware(
         CORSMiddleware,
-        allow_origin_regex=r"^https://(app\.base44\.com|([a-z0-9-]+\.)+base44\.com|([a-z0-9-]+\.)+onrender\.com|([a-z0-9-]+\.)+replit\.app|([a-z0-9-]+\.)+repl\.co)$",
+        allow_origin_regex=r"^https://(www\.livinglytics\.com|app\.base44\.com|([a-z0-9-]+\.)+base44\.com|([a-z0-9-]+\.)+onrender\.com|([a-z0-9-]+\.)+replit\.app|([a-z0-9-]+\.)+repl\.co)$",
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -255,3 +259,35 @@ def github_repos(limit: int = 30):
         raise HTTPException(status_code=e.status, detail=f"GitHub API error: {message}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching GitHub repos: {str(e)}")
+
+@app.post("/v1/digest/weekly", dependencies=[Depends(require_api_key)])
+def weekly_digest(email: str, db: Session = Depends(get_db)):
+    """Generate weekly digest summary for a user (scheduled function endpoint)."""
+    logging.info(f"[WEEKLY DIGEST] Generating digest for {email}")
+    
+    # Get user
+    user = db.execute(select(User).where(User.email == email)).scalar_one_or_none()
+    if not user:
+        logging.warning(f"[WEEKLY DIGEST] User not found: {email}")
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Mock digest summary (replace with actual email sending later)
+    summary = {
+        "email": email,
+        "period": "Last 7 days",
+        "metrics": {
+            "sessions": 0.0,
+            "conversions": 0.0,
+            "ig_reach": 0.0,
+            "engagement": 0.0
+        },
+        "status": "mock_generated"
+    }
+    
+    logging.info(f"[WEEKLY DIGEST] Generated for {email}: {json.dumps(summary)}")
+    
+    return {
+        "success": True,
+        "message": "Weekly digest generated (mock)",
+        "summary": summary
+    }
