@@ -1,8 +1,11 @@
 import os
 import json
 import requests
-from fastapi import FastAPI, Depends, HTTPException, Header
+from datetime import date
+from typing import Dict, Any
+from fastapi import FastAPI, Depends, HTTPException, Header, Body
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 from sqlalchemy import select, func, text
 from sqlalchemy.orm import Session
 from db import get_db, engine
@@ -89,6 +92,10 @@ def get_github_client():
     token = get_github_access_token()
     return Github(token)
 
+@app.get("/", include_in_schema=False)
+def root():
+    return {"message": "Living Lytics API is running", "docs": "/docs"}
+
 @app.get("/v1/health/liveness")
 def liveness():
     return {"status": "ok"}
@@ -121,6 +128,42 @@ def seed_user(email: str, db: Session = Depends(get_db)):
         db.commit()
         return {"created": True}
     return {"created": False}
+
+class MetricIngestRequest(BaseModel):
+    email: str
+    source_name: str
+    metric_date: str
+    data: Dict[str, Any] = Field(default_factory=dict)
+
+@app.post("/v1/metrics/ingest", dependencies=[Depends(require_api_key)])
+def ingest_metrics(request: MetricIngestRequest, db: Session = Depends(get_db)):
+    user = db.execute(select(User).where(User.email == request.email)).scalar_one_or_none()
+    if not user:
+        raise HTTPException(404, "User not found")
+    
+    try:
+        metric_date = date.fromisoformat(request.metric_date)
+    except ValueError:
+        raise HTTPException(400, "Invalid date format. Use YYYY-MM-DD")
+    
+    ingested_count = 0
+    for metric_name, metric_value in request.data.items():
+        try:
+            value = float(metric_value)
+            metric = Metric(
+                user_id=user.id,
+                source_name=request.source_name,
+                metric_date=metric_date,
+                metric_name=metric_name,
+                metric_value=value
+            )
+            db.add(metric)
+            ingested_count += 1
+        except (ValueError, TypeError):
+            continue
+    
+    db.commit()
+    return {"ingested": ingested_count, "metrics": list(request.data.keys())}
 
 @app.get("/v1/dashboard/tiles", dependencies=[Depends(require_api_key)])
 def tiles(email: str, db: Session = Depends(get_db)):
