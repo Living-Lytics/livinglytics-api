@@ -33,6 +33,12 @@ create table if not exists metrics (
 );
 create index if not exists metrics_user_source_date_idx on metrics (user_id, source_name, metric_date);
 create index if not exists data_sources_user_source_idx on data_sources (user_id, source_name);
+
+-- Enable Row-Level Security (RLS) to protect data from unauthorized access
+-- Note: FastAPI backend uses service_role connection which bypasses RLS
+alter table users enable row level security;
+alter table data_sources enable row level security;
+alter table metrics enable row level security;
 """
 
 def main():
