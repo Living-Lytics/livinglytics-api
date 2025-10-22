@@ -10,6 +10,13 @@ Backend API for Living Lytics – an analytics engine and data integration servi
 **Current State:** Fully connected to Supabase with authentication, health checks, and analytics endpoints
 
 ## Recent Changes
+- **2025-10-22:** Row-Level Security (RLS) Implementation
+  - Enabled RLS on all tables (users, data_sources, metrics) for Supabase security compliance
+  - RLS with no policies = default deny all access via PostgREST API
+  - FastAPI backend continues to work (service_role connection bypasses RLS)
+  - Updated schema_sql.py to include RLS setup for future deployments
+  - Verified backend functionality with RLS enabled (tested seed-user and dashboard endpoints)
+
 - **2025-10-20:** GitHub API Integration Complete
   - Integrated Replit GitHub connector for automatic OAuth and token management
   - Installed PyGithub library for GitHub API interaction
