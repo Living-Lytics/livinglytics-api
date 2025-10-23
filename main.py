@@ -2,16 +2,18 @@ import os
 import json
 import logging
 import requests
-from datetime import date
-from typing import Dict, Any
+from datetime import date, datetime, timedelta
+from typing import Dict, Any, Optional, List
 from fastapi import FastAPI, Depends, HTTPException, Header, Body
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from fastapi.responses import HTMLResponse
+from pydantic import BaseModel, Field, EmailStr
 from sqlalchemy import select, func, text
 from sqlalchemy.orm import Session
 from db import get_db, engine
 from models import Base, User, Metric
 from github import Github, GithubException
+from mailer import send_email_resend
 
 # Configure basic logging
 logging.basicConfig(level=logging.INFO)
@@ -260,34 +262,264 @@ def github_repos(limit: int = 30):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching GitHub repos: {str(e)}")
 
-@app.post("/v1/digest/weekly", dependencies=[Depends(require_api_key)])
-def weekly_digest(email: str, db: Session = Depends(get_db)):
-    """Generate weekly digest summary for a user (scheduled function endpoint)."""
-    logging.info(f"[WEEKLY DIGEST] Generating digest for {email}")
-    
-    # Get user
+# Digest Request Models
+class DigestRequest(BaseModel):
+    scope: str = Field(default="email", description="Scope: 'email' for single user or 'all' for all users")
+    email: Optional[EmailStr] = Field(default=None, description="Email address when scope='email'")
+
+# Helper functions for digest
+def _collect_kpis_for_user(email: str, start_date: date, end_date: date, db: Session) -> Dict[str, float]:
+    """Collect KPIs for a user within the date range."""
     user = db.execute(select(User).where(User.email == email)).scalar_one_or_none()
     if not user:
-        logging.warning(f"[WEEKLY DIGEST] User not found: {email}")
-        raise HTTPException(status_code=404, detail="User not found")
+        return {"ig_sessions": 0.0, "ig_conversions": 0.0, "ig_reach": 0.0, "ig_engagement": 0.0}
     
-    # Mock digest summary (replace with actual email sending later)
-    summary = {
-        "email": email,
-        "period": "Last 7 days",
-        "metrics": {
-            "sessions": 0.0,
-            "conversions": 0.0,
-            "ig_reach": 0.0,
-            "engagement": 0.0
-        },
-        "status": "mock_generated"
-    }
+    # Query metrics for the date range
+    metrics = db.execute(
+        select(Metric.metric_name, func.sum(Metric.metric_value).label("total"))
+        .where(Metric.user_id == user.id)
+        .where(Metric.metric_date >= start_date)
+        .where(Metric.metric_date <= end_date)
+        .group_by(Metric.metric_name)
+    ).all()
     
-    logging.info(f"[WEEKLY DIGEST] Generated for {email}: {json.dumps(summary)}")
+    kpis = {"ig_sessions": 0.0, "ig_conversions": 0.0, "ig_reach": 0.0, "ig_engagement": 0.0}
+    for metric_name, total in metrics:
+        if metric_name in kpis:
+            kpis[metric_name] = float(total) if total else 0.0
+    
+    return kpis
+
+def _render_html(email: str, period: str, kpis: Dict[str, float], highlights: List[str], watchouts: List[str], actions: List[str]) -> str:
+    """Render HTML email template for weekly digest."""
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Your Weekly Analytics Digest</title>
+        <style>
+            body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: #f5f5f5; margin: 0; padding: 20px; }}
+            .container {{ max-width: 600px; margin: 0 auto; background-color: white; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }}
+            .header {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; border-radius: 8px 8px 0 0; }}
+            .header h1 {{ margin: 0; font-size: 24px; }}
+            .header p {{ margin: 5px 0 0 0; opacity: 0.9; }}
+            .content {{ padding: 30px; }}
+            .metrics {{ display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px; margin: 20px 0; }}
+            .metric {{ background: #f8f9fa; padding: 20px; border-radius: 6px; text-align: center; }}
+            .metric-value {{ font-size: 32px; font-weight: bold; color: #667eea; margin: 10px 0; }}
+            .metric-label {{ font-size: 14px; color: #6c757d; text-transform: uppercase; letter-spacing: 0.5px; }}
+            .section {{ margin: 30px 0; }}
+            .section h2 {{ font-size: 18px; color: #333; margin-bottom: 15px; }}
+            .section ul {{ list-style: none; padding: 0; }}
+            .section li {{ padding: 10px; margin: 5px 0; background: #f8f9fa; border-radius: 4px; border-left: 3px solid #667eea; }}
+            .footer {{ padding: 20px 30px; background: #f8f9fa; border-radius: 0 0 8px 8px; text-align: center; color: #6c757d; font-size: 12px; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>📊 Your Weekly Analytics Digest</h1>
+                <p>{period}</p>
+            </div>
+            <div class="content">
+                <p>Hi there,</p>
+                <p>Here's your weekly analytics summary for <strong>{email}</strong>:</p>
+                
+                <div class="metrics">
+                    <div class="metric">
+                        <div class="metric-label">Sessions</div>
+                        <div class="metric-value">{kpis.get('ig_sessions', 0):,.0f}</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">Conversions</div>
+                        <div class="metric-value">{kpis.get('ig_conversions', 0):,.0f}</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">Reach</div>
+                        <div class="metric-value">{kpis.get('ig_reach', 0):,.0f}</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-label">Engagement</div>
+                        <div class="metric-value">{kpis.get('ig_engagement', 0):,.0f}</div>
+                    </div>
+                </div>
+                
+                {f'''
+                <div class="section">
+                    <h2>✨ Highlights</h2>
+                    <ul>
+                        {''.join(f'<li>{h}</li>' for h in highlights)}
+                    </ul>
+                </div>
+                ''' if highlights else ''}
+                
+                {f'''
+                <div class="section">
+                    <h2>⚠️ Watch Outs</h2>
+                    <ul>
+                        {''.join(f'<li>{w}</li>' for w in watchouts)}
+                    </ul>
+                </div>
+                ''' if watchouts else ''}
+                
+                {f'''
+                <div class="section">
+                    <h2>🎯 Action Items</h2>
+                    <ul>
+                        {''.join(f'<li>{a}</li>' for a in actions)}
+                    </ul>
+                </div>
+                ''' if actions else ''}
+                
+                <p style="margin-top: 30px;">Keep up the great work!</p>
+            </div>
+            <div class="footer">
+                <p>Living Lytics - Your Analytics Partner</p>
+                <p>This is an automated weekly digest. Reply to this email if you have questions.</p>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+    return html
+
+def _recipient_list(scope: str, email: Optional[str], db: Session) -> List[str]:
+    """Get list of recipient emails based on scope."""
+    if scope == "email":
+        if not email:
+            raise HTTPException(status_code=400, detail="Email required when scope='email'")
+        # Verify user exists
+        user = db.execute(select(User).where(User.email == email)).scalar_one_or_none()
+        if not user:
+            raise HTTPException(status_code=404, detail=f"User not found: {email}")
+        return [email]
+    elif scope == "all":
+        # Get all users
+        users = db.execute(select(User.email)).scalars().all()
+        return list(users)
+    else:
+        raise HTTPException(status_code=400, detail="Invalid scope. Must be 'email' or 'all'")
+
+@app.post("/v1/digest/weekly", dependencies=[Depends(require_api_key)])
+def weekly_digest(payload: DigestRequest, db: Session = Depends(get_db)):
+    """Generate and send weekly digest emails (scheduled function endpoint)."""
+    # Calculate date window (last 7 days)
+    end_date = date.today()
+    start_date = end_date - timedelta(days=7)
+    window_str = f"{start_date.strftime('%b %d')} - {end_date.strftime('%b %d, %Y')}"
+    
+    logging.info(f"[WEEKLY DIGEST] Starting for scope={payload.scope}, email={payload.email}, period={window_str}")
+    
+    # Get recipients
+    recipients = _recipient_list(payload.scope, payload.email, db)
+    
+    sent = 0
+    errors = []
+    
+    for recipient_email in recipients:
+        try:
+            # Collect KPIs
+            kpis = _collect_kpis_for_user(recipient_email, start_date, end_date, db)
+            
+            # Generate insights (simple logic for now)
+            highlights = []
+            watchouts = []
+            actions = []
+            
+            if kpis['ig_reach'] > 20000:
+                highlights.append(f"Strong reach performance: {kpis['ig_reach']:,.0f} impressions!")
+            if kpis['ig_engagement'] > 1000:
+                highlights.append(f"Great engagement: {kpis['ig_engagement']:,.0f} interactions!")
+            
+            if kpis['ig_reach'] == 0 and kpis['ig_engagement'] == 0:
+                watchouts.append("No metrics recorded this week")
+                actions.append("Connect your Instagram account to start tracking")
+            
+            # Render HTML
+            html = _render_html(recipient_email, window_str, kpis, highlights, watchouts, actions)
+            
+            # Send email via Resend
+            send_email_resend(recipient_email, "Your Weekly Analytics Digest", html)
+            
+            logging.info(f"[WEEKLY DIGEST] Sent to {recipient_email}")
+            sent += 1
+            
+        except Exception as e:
+            error_msg = str(e)
+            logging.error(f"[WEEKLY DIGEST] Failed to send to {recipient_email}: {error_msg}")
+            errors.append({"email": recipient_email, "error": error_msg})
+    
+    status = "sent" if sent > 0 else "no_sends"
+    logging.info(f"[WEEKLY DIGEST] Completed: {sent} sent, {len(errors)} errors")
     
     return {
-        "success": True,
-        "message": "Weekly digest generated (mock)",
-        "summary": summary
+        "status": status,
+        "period": window_str,
+        "sent": sent,
+        "errors": errors
     }
+
+@app.get("/v1/digest/preview", dependencies=[Depends(require_api_key)], response_class=HTMLResponse)
+def digest_preview(email: EmailStr, db: Session = Depends(get_db)):
+    """Preview weekly digest HTML without sending (for visual QA)."""
+    # Calculate date window (last 7 days)
+    end_date = date.today()
+    start_date = end_date - timedelta(days=7)
+    window_str = f"{start_date.strftime('%b %d')} - {end_date.strftime('%b %d, %Y')}"
+    
+    # Collect KPIs
+    kpis = _collect_kpis_for_user(email, start_date, end_date, db)
+    
+    # Preview mode indicators
+    highlights = ["Preview mode - No email sent"]
+    if kpis['ig_reach'] > 20000:
+        highlights.append(f"Strong reach performance: {kpis['ig_reach']:,.0f} impressions!")
+    if kpis['ig_engagement'] > 1000:
+        highlights.append(f"Great engagement: {kpis['ig_engagement']:,.0f} interactions!")
+    
+    watchouts = []
+    actions = ["This is a preview only - use /v1/digest/test to send a test email"]
+    
+    # Render HTML
+    html = _render_html(email, window_str, kpis, highlights, watchouts, actions)
+    
+    return html
+
+@app.post("/v1/digest/test", dependencies=[Depends(require_api_key)])
+def digest_test(payload: Dict[str, str] = Body(...), db: Session = Depends(get_db)):
+    """Send a test digest email to a specific address."""
+    email = payload.get("email")
+    if not email:
+        raise HTTPException(status_code=400, detail="email is required")
+    
+    # Calculate date window (last 7 days)
+    end_date = date.today()
+    start_date = end_date - timedelta(days=7)
+    window_str = f"{start_date.strftime('%b %d')} - {end_date.strftime('%b %d, %Y')}"
+    
+    # Collect KPIs
+    kpis = _collect_kpis_for_user(email, start_date, end_date, db)
+    
+    # Test mode indicators
+    highlights = ["Manual test send - Triggered from /v1/digest/test"]
+    if kpis['ig_reach'] > 20000:
+        highlights.append(f"Strong reach performance: {kpis['ig_reach']:,.0f} impressions!")
+    if kpis['ig_engagement'] > 1000:
+        highlights.append(f"Great engagement: {kpis['ig_engagement']:,.0f} interactions!")
+    
+    watchouts = []
+    actions = ["This is a test email to verify Resend integration"]
+    
+    # Render HTML
+    html = _render_html(email, window_str, kpis, highlights, watchouts, actions)
+    
+    # Send via Resend
+    try:
+        result = send_email_resend(email, "Your Weekly Analytics Digest (Test)", html)
+        logging.info(f"[DIGEST TEST] Test email sent to {email}: {result}")
+        return {"status": "sent", "email": email, "resend_response": result}
+    except Exception as e:
+        logging.error(f"[DIGEST TEST] Failed to send test email to {email}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to send test email: {str(e)}")

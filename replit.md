@@ -15,7 +15,7 @@ Living Lytics API is a backend service built with FastAPI, designed as an analyt
 ## System Architecture
 
 ### Tech Stack
-The API is built using Python 3.11 and FastAPI for high-performance web services. SQLAlchemy 2.x with psycopg 3.x is used for ORM and PostgreSQL connectivity. Data validation is handled by Pydantic. GitHub integration utilizes PyGithub and the Replit GitHub Connector for OAuth.
+The API is built using Python 3.11 and FastAPI for high-performance web services. SQLAlchemy 2.x with psycopg 3.x is used for ORM and PostgreSQL connectivity. Data validation is handled by Pydantic (with email-validator for EmailStr). GitHub integration utilizes PyGithub and the Replit GitHub Connector for OAuth. Email sending uses httpx to integrate with the Resend API for transactional emails.
 
 ### Database Schema
 The system uses a PostgreSQL database with three core tables:
@@ -34,8 +34,10 @@ The API provides several categories of endpoints:
 - **GitHub Integration**:
     - `GET /v1/github/user`: Retrieves authenticated GitHub user information.
     - `GET /v1/github/repos`: Lists public repositories for the authenticated user.
-- **Scheduled Tasks**:
-    - `POST /v1/digest/weekly`: Generates a weekly digest summary, designed for scheduled execution.
+- **Email Digests** (Resend integration):
+    - `POST /v1/digest/weekly`: Sends weekly digest emails via Resend API. Supports `scope: "email"` for single user or `scope: "all"` for all users.
+    - `GET /v1/digest/preview`: Returns HTML preview of digest email for visual QA (no email sent).
+    - `POST /v1/digest/test`: Sends test digest email to specified address for integration verification.
 
 ### Authentication
 All protected API endpoints require Bearer token authentication using a `FASTAPI_SECRET_KEY`.
@@ -46,13 +48,21 @@ The application is configured to run on `0.0.0.0` at port `5000`. CORS is intell
 ## External Dependencies
 - **Supabase PostgreSQL**: The primary database for the application, accessed via direct connection (port 5432) for production stability.
 - **GitHub API**: Integrated for fetching user and repository information, leveraging the Replit GitHub Connector for OAuth.
+- **Resend API**: Email service provider for sending transactional weekly digest emails.
 - **Uvicorn**: ASGI server used to run the FastAPI application.
 - **SQLAlchemy**: Python SQL toolkit and Object Relational Mapper.
 - **psycopg**: PostgreSQL adapter for Python.
 - **PyGithub**: Python library for interacting with the GitHub API.
+- **httpx**: Modern HTTP client library used for Resend API integration.
+- **email-validator**: Email validation library for Pydantic EmailStr support.
 
 ## Production Deployment Notes
 - Use DATABASE_URL with direct connection string (port 5432) in deployment secrets
 - Set ALLOW_ORIGINS=https://www.livinglytics.com for production CORS
+- **Required Resend Environment Variables**:
+  - `RESEND_API_KEY`: API key from Resend dashboard
+  - `MAIL_FROM`: Verified sender email address (e.g., noreply@livinglytics.com)
+  - `MAIL_FROM_NAME`: Display name for emails (default: "Living Lytics")
 - Weekly digest endpoint designed for Base44 scheduled functions (Mondays 08:00 AM PT)
 - Monitor logs for [WEEKLY DIGEST] entries to track scheduled function execution
+- Email digests include KPI metrics (sessions, conversions, reach, engagement) with automatic insights and action items

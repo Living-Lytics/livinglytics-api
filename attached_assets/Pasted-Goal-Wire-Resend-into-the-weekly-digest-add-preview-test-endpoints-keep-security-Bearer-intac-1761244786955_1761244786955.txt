@@ -1,0 +1,58 @@
+Goal: Wire Resend into the weekly digest, add preview + test endpoints, keep security (Bearer) intact.
+
+Modify the FastAPI project as follows:
+
+1) Ensure `httpx` is in requirements.txt (already added) and keep using it.
+
+2) In `mailer.py`, keep the existing:
+   send_email_resend(to_email: str, subject: str, html_body: str)
+
+3) In `main.py` (or the router file that defines /v1/digest/weekly):
+   - Import the helper: `from mailer import send_email_resend`
+   - Keep existing auth dependency `require_api_key`.
+   - If not present, define the Pydantic payload:
+       class DigestRequest(BaseModel):
+           scope: str = "email"      # "email" | "all"
+           email: Optional[EmailStr] = None
+   - Keep the existing KPI/HTML generation helpers. Where the route previously returned a mock,
+     replace with a loop that calls send_email_resend().
+
+   Pseudocode inside /v1/digest/weekly:
+     recipients = await _recipient_list(payload.scope, payload.email)
+     sent, errors = 0, []
+     for r in recipients:
+         try:
+             kpis = await _collect_kpis_for_user(r, start_dt, end_dt)
+             html = _render_html(r, window_str, kpis, highlights, watchouts, actions)
+             send_email_resend(r, "Your Weekly Analytics Digest", html)
+             sent += 1
+         except Exception as e:
+             errors.append({"email": r, "error": str(e)})
+     return {"status": "sent" if sent else "no_sends", "period": window_str, "sent": sent, "errors": errors}
+
+4) Add a GET preview endpoint for quick visual QA (Bearer still required):
+   @router.get("/v1/digest/preview", dependencies=[Depends(require_api_key)], response_class=HTMLResponse)
+   async def digest_preview(email: EmailStr):
+       # compute same date window
+       kpis = await _collect_kpis_for_user(email, start_dt, end_dt)
+       html = _render_html(email, window_str, kpis, ["Preview mode"], [], ["This is a preview only."])
+       return html
+
+5) Add a POST test-send endpoint (Bearer required):
+   @router.post("/v1/digest/test", dependencies=[Depends(require_api_key)])
+   async def digest_test(payload: Dict[str, EmailStr]):
+       email = payload.get("email")
+       if not email:
+           raise HTTPException(400, "email is required")
+       # compute same date window
+       kpis = await _collect_kpis_for_user(email, start_dt, end_dt)
+       html = _render_html(email, window_str, kpis, ["Manual test send"], [], ["Triggered from /v1/digest/test"])
+       send_email_resend(email, "Your Weekly Analytics Digest (Test)", html)
+       return {"status": "sent", "email": email}
+
+6) Make sure the app still mounts the router and Swagger shows the three routes:
+   - POST /v1/digest/weekly
+   - GET  /v1/digest/preview
+   - POST /v1/digest/test
+
+7) Redeploy with the deployment environment (not just the dev runner).
