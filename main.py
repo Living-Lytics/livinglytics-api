@@ -364,17 +364,17 @@ def weekly_digest(payload: DigestRequest, db: Session = Depends(get_db)):
     """Send weekly digest emails to users with rate limiting and run tracking."""
     logging.info(f"[WEEKLY DIGEST] Starting with scope={payload.scope}, email={payload.email}")
     
-    # Rate limiting check: prevent duplicate runs within 10 minutes
+    # Rate limiting check: prevent runs within 10 minutes of any previous run start
     recent_run = db.execute(text("""
-        SELECT id FROM digest_runs
+        SELECT id, started_at FROM digest_runs
         WHERE started_at >= NOW() - INTERVAL '10 minutes'
-        AND finished_at IS NULL
+        ORDER BY started_at DESC
         LIMIT 1
     """)).fetchone()
     
     if recent_run:
-        logging.warning("[WEEKLY DIGEST] Rate limit: run already in progress within last 10 minutes")
-        raise HTTPException(status_code=429, detail="Digest run already in progress. Please wait 10 minutes.")
+        logging.warning(f"[WEEKLY DIGEST] Rate limit: last run started at {recent_run[1]}, cooldown in effect")
+        raise HTTPException(status_code=429, detail="Digest run cooldown in effect. Please wait 10 minutes between runs.")
     
     # Create digest run record
     run_result = db.execute(text("""
@@ -383,7 +383,10 @@ def weekly_digest(payload: DigestRequest, db: Session = Depends(get_db)):
         RETURNING id
     """))
     db.commit()
-    run_id = run_result.fetchone()[0]
+    run_row = run_result.fetchone()
+    if not run_row:
+        raise HTTPException(status_code=500, detail="Failed to create digest run record")
+    run_id = run_row[0]
     
     try:
         # Calculate date window (last 7 days)
@@ -540,8 +543,19 @@ def digest_test(payload: Dict[str, str] = Body(...), db: Session = Depends(get_d
 
 @app.post("/v1/webhooks/resend")
 async def resend_webhook(request: Request, db: Session = Depends(get_db)):
-    """Receive webhook events from Resend (no auth required)."""
+    """Receive webhook events from Resend (no auth required).
+    
+    SECURITY NOTE: This endpoint currently accepts all requests without signature verification.
+    TODO: Implement Resend webhook signature validation using X-Resend-Signature header
+    to prevent spoofed webhook requests. See: https://resend.com/docs/webhooks#verify-signature
+    """
     try:
+        # TODO: Add signature verification here before processing
+        # webhook_secret = os.getenv("RESEND_WEBHOOK_SECRET")
+        # signature = request.headers.get("X-Resend-Signature")
+        # if not verify_signature(body, signature, webhook_secret):
+        #     raise HTTPException(status_code=401, detail="Invalid webhook signature")
+        
         body = await request.json()
         
         # Extract event data
