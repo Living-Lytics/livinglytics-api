@@ -715,14 +715,19 @@ class DigestPreferencesUpdate(BaseModel):
 @app.get("/v1/digest/preferences", dependencies=[Depends(require_api_key)])
 def get_digest_preferences(user_email: str, db: Session = Depends(get_db)):
     """Get user's digest preferences. In production, use proper user auth instead of email param."""
-    user = db.execute(select(User).where(User.email == user_email)).scalar_one_or_none()
-    if not user:
+    # Use raw SQL to bypass SQLAlchemy metadata cache
+    result = db.execute(
+        text("SELECT email, opt_in_digest, last_digest_sent_at FROM users WHERE email = :email"),
+        {"email": user_email}
+    ).fetchone()
+    
+    if not result:
         raise HTTPException(status_code=404, detail="User not found")
     
     return {
-        "email": user.email,
-        "opt_in_digest": user.opt_in_digest,
-        "last_digest_sent_at": user.last_digest_sent_at.isoformat() if user.last_digest_sent_at else None
+        "email": result[0],
+        "opt_in_digest": result[1],
+        "last_digest_sent_at": result[2].isoformat() if result[2] else None
     }
 
 @app.put("/v1/digest/preferences", dependencies=[Depends(require_api_key)])
@@ -732,18 +737,26 @@ def update_digest_preferences(
     db: Session = Depends(get_db)
 ):
     """Update user's digest preferences. In production, use proper user auth instead of email param."""
-    user = db.execute(select(User).where(User.email == user_email)).scalar_one_or_none()
-    if not user:
+    # Use raw SQL to bypass SQLAlchemy metadata cache
+    result = db.execute(
+        text("SELECT email FROM users WHERE email = :email"),
+        {"email": user_email}
+    ).fetchone()
+    
+    if not result:
         raise HTTPException(status_code=404, detail="User not found")
     
-    user.opt_in_digest = preferences.opt_in_digest
+    db.execute(
+        text("UPDATE users SET opt_in_digest = :opt_in WHERE email = :email"),
+        {"opt_in": preferences.opt_in_digest, "email": user_email}
+    )
     db.commit()
     
-    logging.info(f"[PREFERENCES] User {user.email} set opt_in_digest={preferences.opt_in_digest}")
+    logging.info(f"[PREFERENCES] User {user_email} set opt_in_digest={preferences.opt_in_digest}")
     
     return {
-        "email": user.email,
-        "opt_in_digest": user.opt_in_digest,
+        "email": user_email,
+        "opt_in_digest": preferences.opt_in_digest,
         "message": "Preferences updated successfully"
     }
 
@@ -764,8 +777,13 @@ def unsubscribe_from_digest(token: str, db: Session = Depends(get_db)):
             </html>
         """, status_code=400)
     
-    user = db.execute(select(User).where(User.id == user_id)).scalar_one_or_none()
-    if not user:
+    # Use raw SQL to bypass SQLAlchemy metadata cache
+    result = db.execute(
+        text("SELECT email FROM users WHERE id = :user_id"),
+        {"user_id": str(user_id)}
+    ).fetchone()
+    
+    if not result:
         return HTMLResponse(content="""
             <!DOCTYPE html>
             <html>
@@ -778,10 +796,13 @@ def unsubscribe_from_digest(token: str, db: Session = Depends(get_db)):
         """, status_code=404)
     
     # Opt out
-    user.opt_in_digest = False
+    db.execute(
+        text("UPDATE users SET opt_in_digest = FALSE WHERE id = :user_id"),
+        {"user_id": str(user_id)}
+    )
     db.commit()
     
-    logging.info(f"[UNSUBSCRIBE] User {user.email} unsubscribed via token")
+    logging.info(f"[UNSUBSCRIBE] User {result[0]} unsubscribed via token")
     
     return HTMLResponse(content=f"""
         <!DOCTYPE html>
