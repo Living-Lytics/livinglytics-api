@@ -71,9 +71,13 @@ The application is configured to run on `0.0.0.0` at port `5000`. **CORS is lock
   - `MAIL_FROM`: Verified sender email address (e.g., noreply@livinglytics.com)
   - `MAIL_FROM_NAME`: Display name for emails (default: "Living Lytics")
 - **Resend Webhook Configuration**:
-  - Configure Resend webhook to POST to `https://api.livinglytics.com/v1/webhooks/resend`
-  - **CRITICAL SECURITY TODO**: Webhook endpoint currently accepts unauthenticated requests. Before production deployment, MUST implement signature verification using Resend's X-Resend-Signature header to prevent spoofed events. See main.py line ~547 for implementation guidance and https://resend.com/docs/webhooks#verify-signature
-  - Events tracked: email.delivered, email.bounced, email.complained, email.opened, email.clicked
+  - **Webhook URL**: `POST /v1/webhooks/resend`
+  - **Secret**: Set `RESEND_WEBHOOK_SECRET` environment variable in deployment
+  - **Header verified**: `X-Resend-Signature` (HMAC-SHA256 over raw body)
+  - **Idempotency**: Unique index on `provider_id`, uses `ON CONFLICT DO NOTHING` to prevent duplicate events
+  - **Events tracked**: email.delivered, email.bounced, email.complained, email.opened, email.clicked
+  - **Security**: HMAC signature verification protects against spoofed webhook requests
+  - **Verification endpoint**: `GET /v1/webhooks/resend/check` (Bearer-protected) to verify secret is configured
   - Monitor email delivery via `/v1/email-events/summary` endpoint
 - Weekly digest endpoint designed for Base44 scheduled functions (Mondays 08:00 AM PT)
 - **Rate Limiting**: Digest runs are limited to one every 10 minutes to prevent duplicate sends
