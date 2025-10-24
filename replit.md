@@ -21,10 +21,11 @@ Living Lytics API is a backend service built with FastAPI, designed as an analyt
 The API is built using Python 3.11 and FastAPI for high-performance web services. SQLAlchemy 2.x with psycopg 3.x is used for ORM and PostgreSQL connectivity. Data validation is handled by Pydantic (with email-validator for EmailStr). GitHub integration utilizes PyGithub and the Replit GitHub Connector for OAuth. Email sending uses httpx to integrate with the Resend API for transactional emails.
 
 ### Database Schema
-The system uses a PostgreSQL database with five core tables:
+The system uses a PostgreSQL database with six core tables:
 - **Users**: Stores user information (`id`, `email`, `org_id`, `created_at`).
 - **Data Sources**: Manages connections to external data sources, including OAuth tokens (`id`, `user_id`, `source_name`, `account_ref`, `access_token`, `refresh_token`, `expires_at`, `created_at`, `updated_at`). Used for Google OAuth (source_name="google") and other integrations.
-- **Metrics**: Stores collected metric data, linked to users and sources (`id`, `user_id`, `source_name`, `metric_date`, `metric_name`, `metric_value`, `meta`, `created_at`).
+- **GA4 Properties**: Stores selected Google Analytics 4 properties per user (`id`, `user_id` UNIQUE, `property_id`, `display_name`, `created_at`, `updated_at`). One property per user enforced by unique constraint.
+- **Metrics**: Stores collected metric data, linked to users and sources (`id`, `user_id`, `source_name`, `metric_date`, `metric_name`, `metric_value`, `meta`, `created_at`). GA4 metrics include property_id in meta field.
 - **Email Events**: Tracks email delivery events from Resend webhooks (`id`, `email`, `event_type`, `provider_id`, `subject`, `payload`, `created_at`). Used for monitoring email delivery, bounces, opens, clicks, and complaints.
 - **Digest Runs**: Tracks weekly digest execution with rate limiting (`id`, `started_at`, `finished_at`, `sent`, `errors`). Prevents duplicate runs within 10 minutes.
 Row-Level Security (RLS) is enabled on all tables, with a default-deny policy, ensuring data access is managed through the backend service role.
@@ -45,9 +46,13 @@ The API provides several categories of endpoints:
     - `GET /v1/github/user`: Retrieves authenticated GitHub user information.
     - `GET /v1/github/repos`: Lists public repositories for the authenticated user.
 - **Google OAuth / GA4 Integration**:
-    - `GET /v1/connections/google/init`: Initiate Google OAuth flow for GA4. Query param: `email`. Redirects to Google consent screen with analytics.readonly scope. Uses state parameter to track user email.
+    - `GET /v1/connections/google/init`: Initiate Google OAuth flow for GA4. Query param: `email`. Redirects to Google consent screen with analytics.readonly scope. Uses CSRF-protected state tokens.
     - `GET /v1/connections/google/callback`: OAuth callback endpoint. Receives authorization code, exchanges for access/refresh tokens, stores in data_sources table. Logs "[OAUTH] Google connected for user=<email>".
     - `GET /v1/connections/status`: **Auth required** - Returns list of connected providers (google, etc.) with token expiration timestamps for a user. Query param: `email`.
+    - `GET /v1/connections/google/properties`: **Auth required** - Lists GA4 properties from Google Analytics Admin API. Returns flat list with account and property details. Requires active OAuth connection.
+    - `POST /v1/connections/google/property`: **Auth required** - Saves selected GA4 property for user. Body: `{email, property_id, property_name}`. Upserts into ga4_properties table (one property per user).
+- **GA4 Data Sync** (admin-protected):
+    - `POST /v1/sync/run`: **Admin endpoint** (requires ADMIN_TOKEN) to manually trigger GA4 data sync. Body: `{email, provider:"google"}`. Fetches yesterday's sessions and conversions from GA4 Data API. **Sync guard**: Skips users without saved properties. Hidden from schema.
 - **Email Digests** (Resend integration with rate limiting and retry):
     - `POST /v1/digest/run`: Send digest to a specific user. Body: `{user_email, days}`. Resolves email to account_id (strict match), queries metrics for that account only, sends personalized digest. Returns `{sent, user_email, period_start, period_end, days}`.
     - `POST /v1/digest/scheduled-run-all`: **Admin endpoint** (requires ADMIN_TOKEN) to manually trigger weekly digest for all opted-in users. Hidden from schema. Uses scheduler logic with idempotent tracking.
