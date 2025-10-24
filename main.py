@@ -14,14 +14,15 @@ from typing import Dict, Any, Optional, List
 from collections import defaultdict
 from fastapi import FastAPI, Depends, HTTPException, Header, Body, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from urllib.parse import urlencode
 from pydantic import BaseModel, Field, EmailStr
 from sqlalchemy import select, func, text, cast, DATE
 from sqlalchemy.orm import Session
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from db import get_db, engine
-from models import Base, User, Metric, DigestLog, EmailEvent
+from models import Base, User, Metric, DigestLog, EmailEvent, DataSource
 from github import Github, GithubException
 from mailer import send_email_resend
 from scheduler_utils import (
@@ -1615,4 +1616,173 @@ def digest_status(db: Session = Depends(get_db)):
         "status": status,
         "sent": sent,
         "errors": errors
+    }
+
+# ============================================================
+# Google OAuth / GA4 Connections
+# ============================================================
+
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
+GOOGLE_OAUTH_REDIRECT = os.getenv("GOOGLE_OAUTH_REDIRECT")
+
+@app.get("/v1/connections/google/init")
+def google_oauth_init(email: str, db: Session = Depends(get_db)):
+    """
+    Initiate Google OAuth flow for GA4 integration.
+    Redirects user to Google consent screen.
+    """
+    if not GOOGLE_CLIENT_ID or not GOOGLE_OAUTH_REDIRECT:
+        raise HTTPException(status_code=500, detail="Google OAuth not configured")
+    
+    # Verify user exists
+    user_result = db.execute(
+        select(User).where(User.email == email)
+    ).scalar_one_or_none()
+    
+    if not user_result:
+        raise HTTPException(status_code=404, detail=f"User not found: {email}")
+    
+    # Build Google OAuth URL
+    oauth_params = {
+        "client_id": GOOGLE_CLIENT_ID,
+        "redirect_uri": GOOGLE_OAUTH_REDIRECT,
+        "scope": "https://www.googleapis.com/auth/analytics.readonly",
+        "access_type": "offline",
+        "include_granted_scopes": "true",
+        "response_type": "code",
+        "state": email,  # Pass email via state parameter
+        "prompt": "consent"  # Force consent to get refresh token
+    }
+    
+    auth_url = f"https://accounts.google.com/o/oauth2/v2/auth?{urlencode(oauth_params)}"
+    
+    logging.info(f"[OAUTH] Initiating Google OAuth for user={email}")
+    
+    return RedirectResponse(url=auth_url)
+
+@app.get("/v1/connections/google/callback")
+def google_oauth_callback(code: str, state: str, db: Session = Depends(get_db)):
+    """
+    Handle Google OAuth callback.
+    Exchanges authorization code for access/refresh tokens.
+    """
+    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET or not GOOGLE_OAUTH_REDIRECT:
+        raise HTTPException(status_code=500, detail="Google OAuth not configured")
+    
+    email = state  # Email passed via state parameter
+    
+    # Verify user exists
+    user_result = db.execute(
+        select(User).where(User.email == email)
+    ).scalar_one_or_none()
+    
+    if not user_result:
+        raise HTTPException(status_code=404, detail=f"User not found: {email}")
+    
+    # Exchange code for tokens
+    token_url = "https://oauth2.googleapis.com/token"
+    token_data = {
+        "client_id": GOOGLE_CLIENT_ID,
+        "client_secret": GOOGLE_CLIENT_SECRET,
+        "code": code,
+        "grant_type": "authorization_code",
+        "redirect_uri": GOOGLE_OAUTH_REDIRECT
+    }
+    
+    try:
+        token_response = requests.post(token_url, data=token_data, timeout=10)
+        token_response.raise_for_status()
+        tokens = token_response.json()
+    except requests.RequestException as e:
+        logging.error(f"[OAUTH] Token exchange failed for user={email}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to exchange code for tokens: {str(e)}")
+    
+    access_token = tokens.get("access_token")
+    refresh_token = tokens.get("refresh_token")
+    expires_in = tokens.get("expires_in", 3600)
+    scope = tokens.get("scope", "https://www.googleapis.com/auth/analytics.readonly")
+    
+    if not access_token:
+        raise HTTPException(status_code=500, detail="No access token received from Google")
+    
+    # Calculate expiration timestamp
+    expires_at = datetime.now() + timedelta(seconds=expires_in)
+    
+    # Check if data source already exists for this user
+    existing = db.execute(
+        select(DataSource).where(
+            DataSource.user_id == user_result.id,
+            DataSource.source_name == "google"
+        )
+    ).scalar_one_or_none()
+    
+    if existing:
+        # Update existing data source
+        existing.access_token = access_token
+        existing.refresh_token = refresh_token
+        existing.expires_at = expires_at
+        existing.account_ref = email
+        existing.updated_at = datetime.now()
+        logging.info(f"[OAUTH] Google connection updated for user={email}")
+    else:
+        # Create new data source
+        new_source = DataSource(
+            user_id=user_result.id,
+            source_name="google",
+            account_ref=email,
+            access_token=access_token,
+            refresh_token=refresh_token,
+            expires_at=expires_at
+        )
+        db.add(new_source)
+        logging.info(f"[OAUTH] Google connected for user={email}")
+    
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        logging.error(f"[OAUTH] Failed to save tokens for user={email}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to save OAuth tokens")
+    
+    return {
+        "connected": True,
+        "provider": "google",
+        "email": email,
+        "expires_at": expires_at.isoformat()
+    }
+
+@app.get("/v1/connections/status", dependencies=[Depends(require_api_key)])
+def connections_status(email: str, db: Session = Depends(get_db)):
+    """
+    Get list of connected providers for a user.
+    Returns provider names and token expiration timestamps.
+    """
+    # Get user
+    user_result = db.execute(
+        select(User).where(User.email == email)
+    ).scalar_one_or_none()
+    
+    if not user_result:
+        raise HTTPException(status_code=404, detail=f"User not found: {email}")
+    
+    # Get all data sources for this user
+    sources = db.execute(
+        select(DataSource).where(DataSource.user_id == user_result.id)
+    ).scalars().all()
+    
+    connections = []
+    for source in sources:
+        connections.append({
+            "provider": source.source_name,
+            "account_ref": source.account_ref,
+            "expires_at": source.expires_at.isoformat() if source.expires_at else None,
+            "connected_at": source.created_at.isoformat(),
+            "updated_at": source.updated_at.isoformat()
+        })
+    
+    return {
+        "email": email,
+        "connections": connections,
+        "total": len(connections)
     }
