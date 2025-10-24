@@ -58,9 +58,17 @@ The API provides several categories of endpoints:
 - **Webhooks** (no auth required):
     - `POST /v1/webhooks/resend`: Receives webhook events from Resend (delivered, bounced, complained, opened, clicked). Stores events in email_events table for monitoring.
 - **Email Events Monitoring**:
-    - `GET /v1/email-events/summary`: Returns summary of email events from last 24 hours with breakdown by type and latest 10 events.
+    - `GET /v1/email-events/summary`: Returns paginated email events summary with filters (email, start, end, page, limit). Supports date range filtering and pagination with metadata.
+    - `GET /v1/email-events/health`: **Delivery health KPIs** - Returns open_rate, click_rate, bounce_rate for a user's email events. Params: email, start, end. **Cached for 5 minutes** with `Cache-Control: max-age=300`.
 - **Metrics Analytics**:
     - `GET /v1/metrics/timeline`: Returns daily metrics timeline for a user (params: user_email, days). **Cached for 5 minutes** with `Cache-Control: max-age=300` header. Returns array of `{date, sessions, conversions, reach, engagement}`. Enforces strict user isolation (no cross-tenant data).
+    - `GET /v1/metrics/timeline/day`: Returns **24 hourly data points** for intraday analytics. Params: email, hours (default 24). Cached for 5 minutes.
+    - `GET /v1/metrics/timeline/month`: Returns **30 daily data points** for monthly trends. Params: email, days (default 30). Cached for 5 minutes.
+- **System Status**:
+    - `GET /v1/status`: **Public endpoint** returning system status for UI badge/health checks. Returns environment, timezone, scheduler next run, email provider, and version (git SHA). No authentication required.
+- **Development & Testing** (admin-protected, hidden from schema):
+    - `POST /v1/dev/seed-metrics`: Seeds realistic metric data for testing. Body: `{email, days}`. Requires ADMIN_TOKEN. Rate-limited.
+    - `POST /v1/dev/seed-email-events`: Seeds email event data with realistic distribution. Body: `{email, events, start?, end?}`. Requires ADMIN_TOKEN. Rate-limited.
 
 ### Authentication
 - **Standard endpoints**: Bearer token authentication using `FASTAPI_SECRET_KEY`
@@ -68,7 +76,7 @@ The API provides several categories of endpoints:
 - Admin endpoints are hidden from OpenAPI schema (`include_in_schema=False`) to prevent discovery
 
 ### Configuration
-The application is configured to run on `0.0.0.0` at port `5000`. **CORS is locked down** to Base44 domains: `livinglytics.base44.app`, `livinglytics.com`, and `localhost:5173` (for local development). Only GET, POST, and OPTIONS methods are allowed with Authorization and Content-Type headers. Environment variables manage database connection strings (DATABASE_URL for direct connection on port 5432, with automatic fallback to connection pooler on port 6543 for IPv6 issues), Supabase keys, and the FastAPI secret key. Logging is configured at INFO level for production visibility, including [WEEKLY DIGEST], [DIGEST RUN], [DIGEST RUN-ALL], [METRICS TIMELINE], [DIGEST PREVIEW], [DIGEST TEST], [RESEND WEBHOOK], and [RESEND] retry logging.
+The application is configured to run on `0.0.0.0` at port `5000`. **CORS is locked down** to Base44 domains: `livinglytics.base44.app`, `livinglytics.com`, and `localhost:5173` (for local development). Only GET, POST, and OPTIONS methods are allowed with Authorization and Content-Type headers. Environment variables manage database connection strings (DATABASE_URL for direct connection on port 5432, with automatic fallback to connection pooler on port 6543 for IPv6 issues), Supabase keys, and the FastAPI secret key. **Structured JSON logging** with request_id tracking for distributed tracing. Optional **Sentry integration** if SENTRY_DSN is set. **Thread-safe in-memory rate limiter** protects admin endpoints (10 capacity, 0.5 refill rate). Logging configured at INFO level for production visibility, including [WEEKLY DIGEST], [DIGEST RUN], [EMAIL HEALTH], [SEED METRICS], [SEED EMAIL EVENTS], and [RESEND] entries.
 
 ## External Dependencies
 - **Supabase PostgreSQL**: The primary database for the application, accessed via direct connection (port 5432) for production stability.
@@ -86,10 +94,14 @@ The application is configured to run on `0.0.0.0` at port `5000`. **CORS is lock
 - CORS is locked to Base44 domains: `livinglytics.base44.app`, `livinglytics.com`, and `localhost:5173` (hardcoded for security)
 - **Required Environment Variables**:
   - `FASTAPI_SECRET_KEY`: API key for standard endpoint authentication
-  - `ADMIN_TOKEN`: **Required for admin endpoints** (manual digest triggers, sensitive operations)
+  - `ADMIN_TOKEN`: **Required for admin endpoints** (manual digest triggers, data seeders, sensitive operations)
   - `RESEND_API_KEY`: API key from Resend dashboard
   - `MAIL_FROM`: Verified sender email address (e.g., noreply@livinglytics.com)
   - `MAIL_FROM_NAME`: Display name for emails (default: "Living Lytics")
+- **Optional Environment Variables**:
+  - `SENTRY_DSN`: Sentry DSN for error tracking (optional)
+  - `ENV`: Environment name for logging/Sentry (default: "production")
+  - `VERSION`: Version identifier (defaults to git SHA: 69a2772)
 - **Resend Webhook Configuration**:
   - **Webhook URL**: `POST /v1/webhooks/resend`
   - **Secret**: Set `RESEND_WEBHOOK_SECRET` environment variable in deployment
@@ -106,4 +118,14 @@ The application is configured to run on `0.0.0.0` at port `5000`. **CORS is lock
 - Monitor logs for [SCHEDULER], [DIGEST], [ADMIN], [RESEND WEBHOOK], and [RESEND] entries
 - Email digests include KPI metrics (sessions, conversions, reach, engagement) with automatic insights and action items
 - Use `/v1/digest/status` to check last digest run status before triggering new runs
+- **Delivery Health Monitoring**: Use `/v1/email-events/health` to track email delivery rates (open_rate, click_rate, bounce_rate) for quality assurance
+- **Data Seeding**: Use admin-protected seeder endpoints for testing and demos (POST /v1/dev/seed-metrics, POST /v1/dev/seed-email-events)
+- **Rate Limiting**: Thread-safe token bucket limiter protects admin endpoints (10 requests capacity, refills 1 every 2 seconds)
 - **Production Sanity Check**: Run `./scripts/prod_check.sh https://api.livinglytics.com $FASTAPI_SECRET_KEY demo@livinglytics.app` to verify health, scheduler, and timeline endpoints
+- **New Features (Oct 2025)**:
+  - Timeline variants: hourly (`/v1/metrics/timeline/day`) and monthly (`/v1/metrics/timeline/month`) aggregations
+  - Email delivery health KPIs with open/click/bounce rates
+  - System status endpoint for UI badges and monitoring
+  - Structured JSON logging with request_id for distributed tracing
+  - Optional Sentry error tracking
+  - Thread-safe rate limiting for admin operations
