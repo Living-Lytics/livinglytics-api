@@ -2039,10 +2039,173 @@ def save_google_property(body: SavePropertyRequest, db: Session = Depends(get_db
         logging.error(f"[GA4] Failed to save property for user={body.email}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to save property: {str(e)}")
     
-    return {"saved": True}
+    # Check if user has any existing GA4 metrics
+    existing_metrics_count = db.execute(
+        select(func.count(Metric.id)).where(
+            Metric.user_id == user_result.id,
+            Metric.source_name == "google"
+        )
+    ).scalar()
+    
+    backfill_started = False
+    
+    if existing_metrics_count == 0:
+        # No prior GA4 data - trigger 30-day backfill
+        logging.info(f"[SYNC] Running initial 30-day backfill for user={body.email}")
+        try:
+            backfill_result = run_ga4_sync_internal(user_result, db, days=30)
+            if backfill_result.get("status") == "success":
+                backfill_started = True
+                logging.info(f"[SYNC] Backfill complete: {backfill_result.get('metrics_inserted', 0)} metrics inserted")
+        except Exception as e:
+            logging.error(f"[SYNC] Backfill failed for user={body.email}: {e}")
+    
+    return {
+        "saved": True,
+        "backfill_started": backfill_started
+    }
 
 # ============================================================
-# GA4 Data Sync
+# GA4 Data Sync - Internal Helper
+# ============================================================
+
+def run_ga4_sync_internal(user: User, db: Session, days: int = 1) -> dict:
+    """
+    Internal function to sync GA4 data for a user.
+    
+    Args:
+        user: User object
+        db: Database session
+        days: Number of days to sync (1 for yesterday, 30 for backfill)
+    
+    Returns:
+        dict with status, metrics_inserted, and date_range
+    """
+    # Check if user has saved GA4 property
+    ga4_property = db.execute(
+        select(GA4Property).where(GA4Property.user_id == user.id)
+    ).scalar_one_or_none()
+    
+    if not ga4_property:
+        logging.info(f"[SYNC] GA4 skipped (no property saved) for user={user.email}")
+        return {
+            "status": "skipped",
+            "reason": "No GA4 property saved",
+            "email": user.email
+        }
+    
+    # Get Google OAuth data source
+    data_source = db.execute(
+        select(DataSource).where(
+            DataSource.user_id == user.id,
+            DataSource.source_name == "google"
+        )
+    ).scalar_one_or_none()
+    
+    if not data_source:
+        logging.error(f"[SYNC] No Google OAuth connection for user={user.email}")
+        raise HTTPException(
+            status_code=404,
+            detail="Google account not connected"
+        )
+    
+    # Refresh token if needed
+    access_token = refresh_google_token(data_source, db)
+    
+    # Calculate date range (inclusive)
+    end_date = (datetime.now() - timedelta(days=1)).date()
+    start_date = end_date - timedelta(days=days-1)
+    
+    logging.info(f"[SYNC] Starting GA4 sync for user={user.email}, property={ga4_property.property_id}, range={start_date} to {end_date}, days={days}")
+    
+    # Call Google Analytics Data API (runReport)
+    api_url = f"https://analyticsdata.googleapis.com/v1beta/{ga4_property.property_id}:runReport"
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json"
+    }
+    
+    request_body = {
+        "dateRanges": [{"startDate": str(start_date), "endDate": str(end_date)}],
+        "dimensions": [{"name": "date"}],
+        "metrics": [
+            {"name": "sessions"},
+            {"name": "conversions"}
+        ]
+    }
+    
+    try:
+        response = requests.post(api_url, headers=headers, json=request_body, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+    except requests.RequestException as e:
+        logging.error(f"[SYNC] GA4 API call failed for user={user.email}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch GA4 data: {str(e)}"
+        )
+    
+    # Parse response and insert metrics
+    rows = data.get("rows", [])
+    metrics_inserted = 0
+    
+    for row in rows:
+        dimension_values = row.get("dimensionValues", [])
+        metric_values = row.get("metricValues", [])
+        
+        if len(dimension_values) >= 1 and len(metric_values) >= 2:
+            # Parse date from dimension (format: YYYYMMDD)
+            date_str = dimension_values[0].get("value")
+            metric_date = datetime.strptime(date_str, "%Y%m%d").date()
+            
+            sessions = int(metric_values[0].get("value", 0))
+            conversions = int(metric_values[1].get("value", 0))
+            
+            # Insert sessions metric
+            sessions_metric = Metric(
+                user_id=user.id,
+                source_name="google",
+                metric_date=metric_date,
+                metric_name="sessions",
+                metric_value=sessions,
+                meta={"property_id": ga4_property.property_id}
+            )
+            db.add(sessions_metric)
+            
+            # Insert conversions metric
+            conversions_metric = Metric(
+                user_id=user.id,
+                source_name="google",
+                metric_date=metric_date,
+                metric_name="conversions",
+                metric_value=conversions,
+                meta={"property_id": ga4_property.property_id}
+            )
+            db.add(conversions_metric)
+            
+            metrics_inserted += 2
+    
+    try:
+        db.commit()
+        logging.info(f"[SYNC] Inserted {metrics_inserted} metrics for user={user.email}, range={start_date} to {end_date}")
+    except Exception as e:
+        db.rollback()
+        logging.error(f"[SYNC] Failed to insert metrics for user={user.email}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to save metrics: {str(e)}")
+    
+    return {
+        "status": "success",
+        "email": user.email,
+        "property_id": ga4_property.property_id,
+        "property_name": ga4_property.display_name,
+        "start_date": str(start_date),
+        "end_date": str(end_date),
+        "days": days,
+        "metrics_inserted": metrics_inserted
+    }
+
+# ============================================================
+# GA4 Data Sync - API Endpoints
 # ============================================================
 
 class SyncRequest(BaseModel):
@@ -2052,7 +2215,7 @@ class SyncRequest(BaseModel):
 @app.post("/v1/sync/run", dependencies=[Depends(require_admin_token)], include_in_schema=False)
 def run_ga4_sync(body: SyncRequest, db: Session = Depends(get_db)):
     """
-    Manually trigger GA4 data sync for a user.
+    Manually trigger GA4 data sync for a user (yesterday only).
     Admin-only endpoint. Requires saved GA4 property.
     """
     # Verify provider
@@ -2067,118 +2230,5 @@ def run_ga4_sync(body: SyncRequest, db: Session = Depends(get_db)):
     if not user_result:
         raise HTTPException(status_code=404, detail=f"User not found: {body.email}")
     
-    # Check if user has saved GA4 property
-    ga4_property = db.execute(
-        select(GA4Property).where(GA4Property.user_id == user_result.id)
-    ).scalar_one_or_none()
-    
-    if not ga4_property:
-        logging.info(f"[SYNC] GA4 skipped (no property saved) for user={body.email}")
-        return {
-            "status": "skipped",
-            "reason": "No GA4 property saved. Please select a property first.",
-            "email": body.email
-        }
-    
-    # Get Google OAuth data source
-    data_source = db.execute(
-        select(DataSource).where(
-            DataSource.user_id == user_result.id,
-            DataSource.source_name == "google"
-        )
-    ).scalar_one_or_none()
-    
-    if not data_source:
-        logging.error(f"[SYNC] No Google OAuth connection for user={body.email}")
-        raise HTTPException(
-            status_code=404,
-            detail="Google account not connected"
-        )
-    
-    # Refresh token if needed
-    access_token = refresh_google_token(data_source, db)
-    
-    # Fetch yesterday's data from GA4
-    yesterday = (datetime.now() - timedelta(days=1)).date()
-    
-    logging.info(f"[SYNC] Starting GA4 sync for user={body.email}, property={ga4_property.property_id}, date={yesterday}")
-    
-    # Call Google Analytics Data API (runReport)
-    api_url = f"https://analyticsdata.googleapis.com/v1beta/{ga4_property.property_id}:runReport"
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json"
-    }
-    
-    request_body = {
-        "dateRanges": [{"startDate": str(yesterday), "endDate": str(yesterday)}],
-        "dimensions": [{"name": "date"}],
-        "metrics": [
-            {"name": "sessions"},
-            {"name": "conversions"}
-        ]
-    }
-    
-    try:
-        response = requests.post(api_url, headers=headers, json=request_body, timeout=15)
-        response.raise_for_status()
-        data = response.json()
-    except requests.RequestException as e:
-        logging.error(f"[SYNC] GA4 API call failed for user={body.email}: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to fetch GA4 data: {str(e)}"
-        )
-    
-    # Parse response and insert metrics
-    rows = data.get("rows", [])
-    metrics_inserted = 0
-    
-    for row in rows:
-        dimension_values = row.get("dimensionValues", [])
-        metric_values = row.get("metricValues", [])
-        
-        if len(metric_values) >= 2:
-            sessions = int(metric_values[0].get("value", 0))
-            conversions = int(metric_values[1].get("value", 0))
-            
-            # Insert sessions metric
-            sessions_metric = Metric(
-                user_id=user_result.id,
-                source_name="google",
-                metric_date=yesterday,
-                metric_name="sessions",
-                metric_value=sessions,
-                meta={"property_id": ga4_property.property_id}
-            )
-            db.add(sessions_metric)
-            
-            # Insert conversions metric
-            conversions_metric = Metric(
-                user_id=user_result.id,
-                source_name="google",
-                metric_date=yesterday,
-                metric_name="conversions",
-                metric_value=conversions,
-                meta={"property_id": ga4_property.property_id}
-            )
-            db.add(conversions_metric)
-            
-            metrics_inserted += 2
-    
-    try:
-        db.commit()
-        logging.info(f"[SYNC] Inserted {metrics_inserted} metrics for user={body.email}, date={yesterday}")
-    except Exception as e:
-        db.rollback()
-        logging.error(f"[SYNC] Failed to insert metrics for user={body.email}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to save metrics: {str(e)}")
-    
-    return {
-        "status": "success",
-        "email": body.email,
-        "property_id": ga4_property.property_id,
-        "property_name": ga4_property.display_name,
-        "date": str(yesterday),
-        "metrics_inserted": metrics_inserted
-    }
+    # Run sync for yesterday (1 day)
+    return run_ga4_sync_internal(user_result, db, days=1)

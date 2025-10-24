@@ -29,7 +29,7 @@ The API provides endpoints for:
 - **Analytics**: Data ingestion, dashboard tile aggregation, and daily/hourly/monthly metric timelines.
 - **GitHub Integration**: Authenticated user and public repository information.
 - **Google OAuth / GA4 Integration**: OAuth flow initiation and callback, connection status, listing GA4 properties, and saving selected GA4 properties.
-- **GA4 Data Sync**: Admin-protected endpoint to trigger GA4 data synchronization.
+- **GA4 Data Sync**: Auto-backfill (30 days) on first property save. Admin-protected endpoint to manually trigger GA4 data synchronization.
 - **Email Digests**: Sending personalized weekly digests to users, admin-triggered scheduled runs, previewing digests, testing, status monitoring, scheduling info, and unsubscribe functionality.
 - **Webhooks**: Resend webhook event reception for email delivery monitoring.
 - **Email Events Monitoring**: Summaries and delivery health KPIs (open, click, bounce rates).
