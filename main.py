@@ -1133,6 +1133,9 @@ def email_events_summary(
     Supports filtering by email (account-scoped), date range, and pagination.
     Returns event counts and paginated event list.
     """
+    from datetime import datetime as dt
+    from sqlalchemy import cast, DATE
+    
     # Support both email and user_email parameters
     user_email_param = user_email or email
     
@@ -1144,65 +1147,59 @@ def email_events_summary(
     
     logging.info(f"[EMAIL EVENTS] email={user_email_param}, start={start}, end={end}, page={page}, limit={limit}")
     
-    # Build filters
-    filters = []
-    params = {"start": start, "end": end}
+    # Parse dates
+    start_date = dt.fromisoformat(start).date()
+    end_date = dt.fromisoformat(end).date()
     
+    # Build base query
+    query = select(EmailEvent)
+    count_query = select(func.count(EmailEvent.id))
+    
+    # Apply email filter if provided
     if user_email_param:
         # Resolve email to account_id for strict scoping
         user = db.execute(select(User).where(User.email == user_email_param)).scalar_one_or_none()
         if not user:
             raise HTTPException(status_code=404, detail=f"User not found: {user_email_param}")
-        filters.append("email = :email")
-        params["email"] = user_email_param
+        query = query.where(EmailEvent.email == user_email_param)
+        count_query = count_query.where(EmailEvent.email == user_email_param)
     
-    where_clause = " AND ".join(filters) if filters else "1=1"
+    # Apply date filters
+    query = query.where(cast(EmailEvent.created_at, DATE) >= start_date)
+    query = query.where(cast(EmailEvent.created_at, DATE) <= end_date)
+    count_query = count_query.where(cast(EmailEvent.created_at, DATE) >= start_date)
+    count_query = count_query.where(cast(EmailEvent.created_at, DATE) <= end_date)
     
-    # Get event counts by type
-    count_query = f"""
-        SELECT event_type, COUNT(*) as count
-        FROM email_events
-        WHERE {where_clause}
-          AND created_at >= :start::date
-          AND created_at < :end::date + INTERVAL '1 day'
-        GROUP BY event_type
-    """
-    count_result = db.execute(text(count_query), params).fetchall()
-    counts = {row[0]: row[1] for row in count_result}
+    # Get total count
+    total = db.execute(count_query).scalar() or 0
     
-    # Get total count for pagination
-    total_query = f"""
-        SELECT COUNT(*)
-        FROM email_events
-        WHERE {where_clause}
-          AND created_at >= :start::date
-          AND created_at < :end::date + INTERVAL '1 day'
-    """
-    total = db.execute(text(total_query), params).scalar()
+    # Get event type counts
+    type_counts_query = select(
+        EmailEvent.event_type,
+        func.count(EmailEvent.id).label("count")
+    ).group_by(EmailEvent.event_type)
+    
+    if user_email_param:
+        type_counts_query = type_counts_query.where(EmailEvent.email == user_email_param)
+    type_counts_query = type_counts_query.where(cast(EmailEvent.created_at, DATE) >= start_date)
+    type_counts_query = type_counts_query.where(cast(EmailEvent.created_at, DATE) <= end_date)
+    
+    type_counts_result = db.execute(type_counts_query).all()
+    counts = {row[0]: row[1] for row in type_counts_result}
     
     # Get paginated events
     offset = (page - 1) * limit
-    events_query = f"""
-        SELECT created_at, event_type, provider_id, subject
-        FROM email_events
-        WHERE {where_clause}
-          AND created_at >= :start::date
-          AND created_at < :end::date + INTERVAL '1 day'
-        ORDER BY created_at DESC
-        LIMIT :limit OFFSET :offset
-    """
-    params["limit"] = limit
-    params["offset"] = offset
+    events_query = query.order_by(EmailEvent.created_at.desc()).offset(offset).limit(limit)
+    events_result = db.execute(events_query).scalars().all()
     
-    events_result = db.execute(text(events_query), params).fetchall()
     events = [
         {
-            "ts": row[0].isoformat() if row[0] else None,
-            "type": row[1],
-            "message_id": row[2],
-            "subject": row[3]
+            "ts": event.created_at.isoformat() if event.created_at else None,
+            "type": event.event_type,
+            "message_id": event.provider_id,
+            "subject": event.subject
         }
-        for row in events_result
+        for event in events_result
     ]
     
     has_next = (offset + limit) < total
