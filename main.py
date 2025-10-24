@@ -4,7 +4,7 @@ import logging
 import requests
 from datetime import date, datetime, timedelta
 from typing import Dict, Any, Optional, List
-from fastapi import FastAPI, Depends, HTTPException, Header, Body
+from fastapi import FastAPI, Depends, HTTPException, Header, Body, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field, EmailStr
@@ -23,26 +23,20 @@ API_KEY = os.getenv("FASTAPI_SECRET_KEY")
 if not API_KEY:
     raise RuntimeError("FASTAPI_SECRET_KEY not set")
 
-ALLOW_ORIGINS = os.getenv("ALLOW_ORIGINS", "*")
-
 app = FastAPI(title=APP_NAME)
 
-if ALLOW_ORIGINS == "*":
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=False,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-else:
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origin_regex=r"^https://(www\.livinglytics\.com|app\.base44\.com|([a-z0-9-]+\.)+base44\.com|([a-z0-9-]+\.)+onrender\.com|([a-z0-9-]+\.)+replit\.app|([a-z0-9-]+\.)+repl\.co)$",
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+ALLOW_ORIGINS = [
+    "https://app.livinglytics.com",
+    "https://www.livinglytics.com",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOW_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
+)
 
 def require_api_key(authorization: str = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):
@@ -333,60 +327,31 @@ def _render_html(email: str, period: str, kpis: Dict[str, float], highlights: Li
                 <p>{period}</p>
             </div>
             <div class="content">
-                <p>Hi there,</p>
-                <p>Here's your weekly analytics summary for <strong>{email}</strong>:</p>
-                
                 <div class="metrics">
                     <div class="metric">
+                        <div class="metric-value">{int(kpis['ig_sessions']):,}</div>
                         <div class="metric-label">Sessions</div>
-                        <div class="metric-value">{kpis.get('ig_sessions', 0):,.0f}</div>
                     </div>
                     <div class="metric">
+                        <div class="metric-value">{int(kpis['ig_conversions']):,}</div>
                         <div class="metric-label">Conversions</div>
-                        <div class="metric-value">{kpis.get('ig_conversions', 0):,.0f}</div>
                     </div>
                     <div class="metric">
+                        <div class="metric-value">{int(kpis['ig_reach']):,}</div>
                         <div class="metric-label">Reach</div>
-                        <div class="metric-value">{kpis.get('ig_reach', 0):,.0f}</div>
                     </div>
                     <div class="metric">
+                        <div class="metric-value">{int(kpis['ig_engagement']):,}</div>
                         <div class="metric-label">Engagement</div>
-                        <div class="metric-value">{kpis.get('ig_engagement', 0):,.0f}</div>
                     </div>
                 </div>
-                
-                {f'''
-                <div class="section">
-                    <h2>✨ Highlights</h2>
-                    <ul>
-                        {''.join(f'<li>{h}</li>' for h in highlights)}
-                    </ul>
-                </div>
-                ''' if highlights else ''}
-                
-                {f'''
-                <div class="section">
-                    <h2>⚠️ Watch Outs</h2>
-                    <ul>
-                        {''.join(f'<li>{w}</li>' for w in watchouts)}
-                    </ul>
-                </div>
-                ''' if watchouts else ''}
-                
-                {f'''
-                <div class="section">
-                    <h2>🎯 Action Items</h2>
-                    <ul>
-                        {''.join(f'<li>{a}</li>' for a in actions)}
-                    </ul>
-                </div>
-                ''' if actions else ''}
-                
-                <p style="margin-top: 30px;">Keep up the great work!</p>
+                {"<div class='section'><h2>✨ Highlights</h2><ul>" + "".join(f"<li>{h}</li>" for h in highlights) + "</ul></div>" if highlights else ""}
+                {"<div class='section'><h2>⚠️ Watch Outs</h2><ul>" + "".join(f"<li>{w}</li>" for w in watchouts) + "</ul></div>" if watchouts else ""}
+                {"<div class='section'><h2>🎯 Action Items</h2><ul>" + "".join(f"<li>{a}</li>" for a in actions) + "</ul></div>" if actions else ""}
             </div>
             <div class="footer">
-                <p>Living Lytics - Your Analytics Partner</p>
-                <p>This is an automated weekly digest. Reply to this email if you have questions.</p>
+                <p>Living Lytics • Where Data Comes Alive</p>
+                <p style="margin-top: 10px; font-size: 11px;">Sent to {email}</p>
             </div>
         </div>
     </body>
@@ -394,81 +359,115 @@ def _render_html(email: str, period: str, kpis: Dict[str, float], highlights: Li
     """
     return html
 
-def _recipient_list(scope: str, email: Optional[str], db: Session) -> List[str]:
-    """Get list of recipient emails based on scope."""
-    if scope == "email":
-        if not email:
-            raise HTTPException(status_code=400, detail="Email required when scope='email'")
-        # Verify user exists
-        user = db.execute(select(User).where(User.email == email)).scalar_one_or_none()
-        if not user:
-            raise HTTPException(status_code=404, detail=f"User not found: {email}")
-        return [email]
-    elif scope == "all":
-        # Get all users
-        users = db.execute(select(User.email)).scalars().all()
-        return list(users)
-    else:
-        raise HTTPException(status_code=400, detail="Invalid scope. Must be 'email' or 'all'")
-
 @app.post("/v1/digest/weekly", dependencies=[Depends(require_api_key)])
 def weekly_digest(payload: DigestRequest, db: Session = Depends(get_db)):
-    """Generate and send weekly digest emails (scheduled function endpoint)."""
-    # Calculate date window (last 7 days)
-    end_date = date.today()
-    start_date = end_date - timedelta(days=7)
-    window_str = f"{start_date.strftime('%b %d')} - {end_date.strftime('%b %d, %Y')}"
+    """Send weekly digest emails to users with rate limiting and run tracking."""
+    logging.info(f"[WEEKLY DIGEST] Starting with scope={payload.scope}, email={payload.email}")
     
-    logging.info(f"[WEEKLY DIGEST] Starting for scope={payload.scope}, email={payload.email}, period={window_str}")
+    # Rate limiting check: prevent duplicate runs within 10 minutes
+    recent_run = db.execute(text("""
+        SELECT id FROM digest_runs
+        WHERE started_at >= NOW() - INTERVAL '10 minutes'
+        AND finished_at IS NULL
+        LIMIT 1
+    """)).fetchone()
     
-    # Get recipients
-    recipients = _recipient_list(payload.scope, payload.email, db)
+    if recent_run:
+        logging.warning("[WEEKLY DIGEST] Rate limit: run already in progress within last 10 minutes")
+        raise HTTPException(status_code=429, detail="Digest run already in progress. Please wait 10 minutes.")
     
-    sent = 0
-    errors = []
+    # Create digest run record
+    run_result = db.execute(text("""
+        INSERT INTO digest_runs(started_at, sent, errors)
+        VALUES (NOW(), 0, 0)
+        RETURNING id
+    """))
+    db.commit()
+    run_id = run_result.fetchone()[0]
     
-    for recipient_email in recipients:
-        try:
-            # Collect KPIs
-            kpis = _collect_kpis_for_user(recipient_email, start_date, end_date, db)
-            
-            # Generate insights (simple logic for now)
-            highlights = []
-            watchouts = []
-            actions = []
-            
-            if kpis['ig_reach'] > 20000:
-                highlights.append(f"Strong reach performance: {kpis['ig_reach']:,.0f} impressions!")
-            if kpis['ig_engagement'] > 1000:
-                highlights.append(f"Great engagement: {kpis['ig_engagement']:,.0f} interactions!")
-            
-            if kpis['ig_reach'] == 0 and kpis['ig_engagement'] == 0:
-                watchouts.append("No metrics recorded this week")
-                actions.append("Connect your Instagram account to start tracking")
-            
-            # Render HTML
-            html = _render_html(recipient_email, window_str, kpis, highlights, watchouts, actions)
-            
-            # Send email via Resend
-            send_email_resend(recipient_email, "Your Weekly Analytics Digest", html)
-            
-            logging.info(f"[WEEKLY DIGEST] Sent to {recipient_email}")
-            sent += 1
-            
-        except Exception as e:
-            error_msg = str(e)
-            logging.error(f"[WEEKLY DIGEST] Failed to send to {recipient_email}: {error_msg}")
-            errors.append({"email": recipient_email, "error": error_msg})
-    
-    status = "sent" if sent > 0 else "no_sends"
-    logging.info(f"[WEEKLY DIGEST] Completed: {sent} sent, {len(errors)} errors")
-    
-    return {
-        "status": status,
-        "period": window_str,
-        "sent": sent,
-        "errors": errors
-    }
+    try:
+        # Calculate date window (last 7 days)
+        end_date = date.today()
+        start_date = end_date - timedelta(days=7)
+        window_str = f"{start_date.strftime('%b %d')} - {end_date.strftime('%b %d, %Y')}"
+        
+        # Determine recipients
+        if payload.scope == "email":
+            if not payload.email:
+                raise HTTPException(status_code=400, detail="email is required when scope is 'email'")
+            recipients = [payload.email]
+        elif payload.scope == "all":
+            users = db.execute(select(User.email)).scalars().all()
+            recipients = list(users)
+        else:
+            raise HTTPException(status_code=400, detail="scope must be 'email' or 'all'")
+        
+        logging.info(f"[WEEKLY DIGEST] Processing {len(recipients)} recipients")
+        
+        sent = 0
+        errors = []
+        
+        for recipient_email in recipients:
+            try:
+                # Collect KPIs
+                kpis = _collect_kpis_for_user(recipient_email, start_date, end_date, db)
+                
+                # Generate insights
+                highlights = []
+                watchouts = []
+                actions = []
+                
+                if kpis['ig_reach'] > 20000:
+                    highlights.append(f"Strong reach performance: {kpis['ig_reach']:,.0f} impressions!")
+                if kpis['ig_engagement'] > 1000:
+                    highlights.append(f"Great engagement: {kpis['ig_engagement']:,.0f} interactions!")
+                
+                if kpis['ig_reach'] == 0 and kpis['ig_engagement'] == 0:
+                    watchouts.append("No metrics recorded this week")
+                    actions.append("Connect your Instagram account to start tracking")
+                
+                # Render HTML
+                html = _render_html(recipient_email, window_str, kpis, highlights, watchouts, actions)
+                
+                # Send email via Resend (with retry logic built in)
+                send_email_resend(recipient_email, "Your Weekly Analytics Digest", html)
+                
+                logging.info(f"[WEEKLY DIGEST] Sent to {recipient_email}")
+                sent += 1
+                
+            except Exception as e:
+                error_msg = str(e)
+                logging.error(f"[WEEKLY DIGEST] Failed to send to {recipient_email}: {error_msg}")
+                errors.append({"email": recipient_email, "error": error_msg})
+        
+        # Update digest run record with results
+        db.execute(text("""
+            UPDATE digest_runs
+            SET finished_at = NOW(), sent = :sent, errors = :errors
+            WHERE id = :run_id
+        """), {"run_id": run_id, "sent": sent, "errors": len(errors)})
+        db.commit()
+        
+        status = "sent" if sent > 0 else "no_sends"
+        logging.info(f"[WEEKLY DIGEST] Completed: {sent} sent, {len(errors)} errors")
+        
+        return {
+            "status": status,
+            "period": window_str,
+            "sent": sent,
+            "errors": errors,
+            "run_id": str(run_id)
+        }
+        
+    except Exception as e:
+        # Mark run as failed
+        db.execute(text("""
+            UPDATE digest_runs
+            SET finished_at = NOW(), errors = -1
+            WHERE id = :run_id
+        """), {"run_id": run_id})
+        db.commit()
+        raise
 
 @app.get("/v1/digest/preview", dependencies=[Depends(require_api_key)], response_class=HTMLResponse)
 def digest_preview(email: EmailStr, db: Session = Depends(get_db)):
@@ -536,3 +535,108 @@ def digest_test(payload: Dict[str, str] = Body(...), db: Session = Depends(get_d
     except Exception as e:
         logging.error(f"[DIGEST TEST] Failed to send test email to {email}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to send test email: {str(e)}")
+
+# Webhook and Email Events Endpoints
+
+@app.post("/v1/webhooks/resend")
+async def resend_webhook(request: Request, db: Session = Depends(get_db)):
+    """Receive webhook events from Resend (no auth required)."""
+    try:
+        body = await request.json()
+        
+        # Extract event data
+        event_type = body.get("type", "unknown")
+        
+        # Resend webhook formats vary, try multiple paths for email
+        email = body.get("to") or body.get("email") or body.get("data", {}).get("to") or "unknown"
+        if isinstance(email, list):
+            email = email[0] if email else "unknown"
+        
+        provider_id = body.get("id") or body.get("data", {}).get("email_id")
+        subject = body.get("subject") or body.get("data", {}).get("subject")
+        
+        # Store event in database
+        db.execute(text("""
+            INSERT INTO email_events(email, event_type, provider_id, subject, payload)
+            VALUES (:email, :event_type, :provider_id, :subject, CAST(:payload AS jsonb))
+        """), {
+            "email": email,
+            "event_type": event_type,
+            "provider_id": provider_id,
+            "subject": subject,
+            "payload": json.dumps(body)
+        })
+        db.commit()
+        
+        logging.info(f"[RESEND WEBHOOK] Stored {event_type} event for {email}")
+        
+        return {"ok": True}
+        
+    except Exception as e:
+        logging.error(f"[RESEND WEBHOOK] Error: {str(e)}")
+        return {"ok": False, "error": str(e)}
+
+@app.get("/v1/email-events/summary", dependencies=[Depends(require_api_key)])
+def email_events_summary(db: Session = Depends(get_db)):
+    """Get summary of email events from last 24 hours."""
+    
+    # Get counts by event type for last 24 hours
+    last_24h_result = db.execute(text("""
+        SELECT event_type, COUNT(*) as count
+        FROM email_events
+        WHERE created_at >= NOW() - INTERVAL '24 hours'
+        GROUP BY event_type
+    """)).fetchall()
+    
+    last_24h = {row[0]: row[1] for row in last_24h_result}
+    
+    # Get latest 10 events
+    latest_result = db.execute(text("""
+        SELECT email, event_type, created_at
+        FROM email_events
+        ORDER BY created_at DESC
+        LIMIT 10
+    """)).fetchall()
+    
+    latest = [
+        {
+            "email": row[0],
+            "event_type": row[1],
+            "created_at": row[2].isoformat() if row[2] else None
+        }
+        for row in latest_result
+    ]
+    
+    return {
+        "last_24h": last_24h,
+        "latest": latest
+    }
+
+@app.get("/v1/digest/status", dependencies=[Depends(require_api_key)])
+def digest_status(db: Session = Depends(get_db)):
+    """Get status of the last digest run."""
+    
+    result = db.execute(text("""
+        SELECT started_at, finished_at, sent, errors
+        FROM digest_runs
+        ORDER BY started_at DESC
+        LIMIT 1
+    """)).fetchone()
+    
+    if not result:
+        return {
+            "last_run": None,
+            "status": "never_run"
+        }
+    
+    started_at, finished_at, sent, errors = result
+    
+    status = "completed" if finished_at else "running"
+    
+    return {
+        "last_run": started_at.isoformat() if started_at else None,
+        "finished_at": finished_at.isoformat() if finished_at else None,
+        "status": status,
+        "sent": sent,
+        "errors": errors
+    }

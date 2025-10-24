@@ -1,0 +1,78 @@
+Goal: Lock CORS; add Resend webhook + Supabase table; add rate limiting and retry; expose “last run” info.
+
+Make the following backend changes:
+
+A) CORS lock
+- In main.py where CORSMiddleware is set, replace "*" with:
+  ALLOW_ORIGINS = [
+    "https://app.livinglytics.com",   # replace with your Base44 app origin
+  ]
+  Allow credentials = False; methods = ["GET","POST","OPTIONS"]; headers include Authorization, Content-Type.
+
+B) Supabase table for email events
+- Create SQL file schema_email_events.sql and apply it (via existing DB init or one-time run):
+  CREATE TABLE IF NOT EXISTS email_events (
+    id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    email        text NOT NULL,
+    event_type   text NOT NULL,           -- delivered, bounced, complained, opened, clicked, etc.
+    provider_id  text,                    -- Resend email id
+    subject      text,
+    payload      jsonb NOT NULL,
+    created_at   timestamptz NOT NULL DEFAULT now()
+  );
+  CREATE INDEX IF NOT EXISTS email_events_email_idx ON email_events(email);
+  CREATE INDEX IF NOT EXISTS email_events_type_idx ON email_events(event_type);
+  CREATE INDEX IF NOT EXISTS email_events_created_idx ON email_events(created_at);
+
+C) Webhook endpoint (Resend -> our API)
+- Add POST /v1/webhooks/resend (no auth). Store the event.
+- Accept JSON body; upsert into email_events with (email, event_type, provider_id, subject, payload).
+- Return 200 quickly. (Optional: later add signature verification—leave a TODO.)
+
+Example (in main.py or a router file):
+  @router.post("/v1/webhooks/resend")
+  async def resend_webhook(request: Request):
+      body = await request.json()
+      event_type = body.get("type") or "unknown"
+      email = body.get("to") or body.get("email") or "unknown"
+      provider_id = body.get("id") or body.get("message", {}).get("id")
+      subject = body.get("subject") or body.get("message", {}).get("subject")
+      async with async_session_maker() as s:
+          await s.execute(text("""
+            INSERT INTO email_events(email, event_type, provider_id, subject, payload)
+            VALUES (:email, :event_type, :provider_id, :subject, :payload::jsonb)
+          """), {
+            "email": email, "event_type": event_type,
+            "provider_id": provider_id, "subject": subject,
+            "payload": json.dumps(body)
+          })
+          await s.commit()
+      return {"ok": true}
+
+- Add a GET /v1/email-events/summary (Bearer required) returning:
+  { "last_24h": { "delivered": N, "bounced": N, "complained": N }, "latest": [ {email, event_type, created_at} ...limit 10 ] }
+
+D) Rate limiting + retry for digest sends
+- Add a simple per-run guard in /v1/digest/weekly:
+  - If more than 1 run started in the last 10 minutes, return 429.
+  - Record a run-start row in memory or DB table (email_runs) and a run-end result (sent, errors).
+- Wrap send_email_resend(...) in a retry with exponential backoff on 429/5xx (e.g., 3 tries at 0.5s, 1s, 2s).
+
+E) Last-run status endpoint for Base44
+- Add GET /v1/digest/status (Bearer required) returning last run timestamp, sent count, errors count.
+- If you don’t want a new table, accumulate counts during /v1/digest/weekly and store a single row in a key-value table or in-memory cache; otherwise create:
+  CREATE TABLE IF NOT EXISTS digest_runs(
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    started_at timestamptz NOT NULL DEFAULT now(),
+    finished_at timestamptz,
+    sent integer NOT NULL DEFAULT 0,
+    errors integer NOT NULL DEFAULT 0
+  );
+  Insert on start, update on finish.
+
+F) Redeploy
+- Ensure Deployment secrets are present and unchanged.
+- After deploy, curl:
+  - GET /v1/health/readiness
+  - POST /v1/digest/test {"email":"marable.marcel@gmail.com"}
+  - POST a sample webhook payload to /v1/webhooks/resend and verify a row is inserted.
