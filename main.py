@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from db import get_db, engine
-from models import Base, User, Metric, DigestLog, EmailEvent, DataSource
+from models import Base, User, Metric, DigestLog, EmailEvent, DataSource, GA4Property
 from github import Github, GithubException
 from mailer import send_email_resend
 from scheduler_utils import (
@@ -138,7 +138,18 @@ def scheduled_digest_job():
 
 @app.on_event("startup")
 def on_startup():
-    """Initialize database indexes, constraints, and start scheduler on startup."""
+    """Initialize database tables, indexes, constraints, and start scheduler on startup."""
+    # Create ga4_properties table
+    try:
+        # Import here to ensure all models are loaded
+        from models import GA4Property
+        # Create ga4_properties table
+        Base.metadata.create_all(bind=engine, tables=[GA4Property.__table__], checkfirst=True)
+        logging.info("[STARTUP] GA4 properties table created/verified")
+    except Exception as e:
+        logging.error(f"[STARTUP] Failed to create ga4_properties table: {e}")
+    
+    # Create indexes
     try:
         with engine.connect() as conn:
             # Create unique index on provider_id for idempotent webhook processing
@@ -1811,6 +1822,65 @@ def google_oauth_callback(code: str, state: str, db: Session = Depends(get_db)):
         "expires_at": expires_at.isoformat()
     }
 
+def refresh_google_token(data_source: DataSource, db: Session) -> str:
+    """
+    Refresh Google OAuth access token if expired.
+    Returns valid access token.
+    """
+    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
+        raise HTTPException(status_code=500, detail="Google OAuth not configured")
+    
+    # Check if token is expired (with 5 minute buffer)
+    now = datetime.now()
+    if data_source.expires_at and data_source.expires_at > now + timedelta(minutes=5):
+        # Token still valid
+        return data_source.access_token
+    
+    # Need to refresh
+    if not data_source.refresh_token:
+        raise HTTPException(
+            status_code=401,
+            detail="No refresh token available. Please reconnect your Google account."
+        )
+    
+    logging.info(f"[OAUTH] Refreshing Google token for user_id={data_source.user_id}")
+    
+    token_url = "https://oauth2.googleapis.com/token"
+    token_data = {
+        "client_id": GOOGLE_CLIENT_ID,
+        "client_secret": GOOGLE_CLIENT_SECRET,
+        "refresh_token": data_source.refresh_token,
+        "grant_type": "refresh_token"
+    }
+    
+    try:
+        token_response = requests.post(token_url, data=token_data, timeout=10)
+        token_response.raise_for_status()
+        tokens = token_response.json()
+    except requests.RequestException as e:
+        logging.error(f"[OAUTH] Token refresh failed: {e}")
+        raise HTTPException(
+            status_code=401,
+            detail="Failed to refresh Google token. Please reconnect your account."
+        )
+    
+    new_access_token = tokens.get("access_token")
+    expires_in = tokens.get("expires_in", 3600)
+    
+    if not new_access_token:
+        raise HTTPException(status_code=500, detail="No access token in refresh response")
+    
+    # Update data source
+    data_source.access_token = new_access_token
+    data_source.expires_at = now + timedelta(seconds=expires_in)
+    data_source.updated_at = now
+    
+    db.commit()
+    
+    logging.info(f"[OAUTH] Token refreshed successfully for user_id={data_source.user_id}")
+    
+    return new_access_token
+
 @app.get("/v1/connections/status", dependencies=[Depends(require_api_key)])
 def connections_status(email: str, db: Session = Depends(get_db)):
     """
@@ -1845,3 +1915,128 @@ def connections_status(email: str, db: Session = Depends(get_db)):
         "connections": connections,
         "total": len(connections)
     }
+
+@app.get("/v1/connections/google/properties", dependencies=[Depends(require_api_key)])
+def list_google_properties(email: str, db: Session = Depends(get_db)):
+    """
+    List GA4 properties from Google Analytics Admin API.
+    Returns flattened list of accounts and their properties.
+    """
+    # Get user
+    user_result = db.execute(
+        select(User).where(User.email == email)
+    ).scalar_one_or_none()
+    
+    if not user_result:
+        raise HTTPException(status_code=404, detail=f"User not found: {email}")
+    
+    # Get Google OAuth data source
+    data_source = db.execute(
+        select(DataSource).where(
+            DataSource.user_id == user_result.id,
+            DataSource.source_name == "google"
+        )
+    ).scalar_one_or_none()
+    
+    if not data_source:
+        raise HTTPException(
+            status_code=404,
+            detail="Google account not connected. Please connect via /v1/connections/google/init"
+        )
+    
+    # Refresh token if needed
+    access_token = refresh_google_token(data_source, db)
+    
+    # Call Google Analytics Admin API
+    api_url = "https://analyticsadmin.googleapis.com/v1beta/accountSummaries"
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json"
+    }
+    
+    try:
+        response = requests.get(api_url, headers=headers, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+    except requests.RequestException as e:
+        logging.error(f"[GA4] Failed to fetch properties for user={email}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch GA4 properties: {str(e)}"
+        )
+    
+    # Build flat list of properties
+    properties_list = []
+    account_summaries = data.get("accountSummaries", [])
+    
+    for account in account_summaries:
+        account_name = account.get("displayName", "Unknown Account")
+        account_id = account.get("account", "")
+        
+        for property_summary in account.get("propertySummaries", []):
+            property_name = property_summary.get("displayName", "Unknown Property")
+            property_id = property_summary.get("property", "")
+            
+            # Extract numeric ID from property_id (e.g., "properties/123456789" -> "123456789")
+            property_numeric_id = property_id.split("/")[-1] if property_id else ""
+            
+            properties_list.append({
+                "account_name": account_name,
+                "account": account_id,
+                "property_name": property_name,
+                "property_id": property_id,
+                "property_numeric_id": property_numeric_id
+            })
+    
+    logging.info(f"[GA4] Fetched {len(properties_list)} properties for user={email}")
+    
+    return properties_list
+
+class SavePropertyRequest(BaseModel):
+    email: EmailStr
+    property_id: str = Field(..., min_length=1)
+    property_name: str = Field(..., min_length=1)
+
+@app.post("/v1/connections/google/property", dependencies=[Depends(require_api_key)])
+def save_google_property(body: SavePropertyRequest, db: Session = Depends(get_db)):
+    """
+    Save selected GA4 property for a user.
+    Upserts into ga4_properties table (one property per user).
+    """
+    # Get user
+    user_result = db.execute(
+        select(User).where(User.email == body.email)
+    ).scalar_one_or_none()
+    
+    if not user_result:
+        raise HTTPException(status_code=404, detail=f"User not found: {body.email}")
+    
+    # Check if property already saved
+    existing = db.execute(
+        select(GA4Property).where(GA4Property.user_id == user_result.id)
+    ).scalar_one_or_none()
+    
+    if existing:
+        # Update existing
+        existing.property_id = body.property_id
+        existing.display_name = body.property_name
+        existing.updated_at = datetime.now()
+        logging.info(f"[GA4] Updated property for user={body.email}: {body.property_id}")
+    else:
+        # Create new
+        new_property = GA4Property(
+            user_id=user_result.id,
+            property_id=body.property_id,
+            display_name=body.property_name
+        )
+        db.add(new_property)
+        logging.info(f"[GA4] Saved property for user={body.email}: {body.property_id}")
+    
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        logging.error(f"[GA4] Failed to save property for user={body.email}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to save property: {str(e)}")
+    
+    return {"saved": True}
