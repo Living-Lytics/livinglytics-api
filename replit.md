@@ -28,16 +28,23 @@ Row-Level Security (RLS) is enabled on all tables, with a default-deny policy, e
 
 ### API Endpoints
 The API provides several categories of endpoints:
-- **Health Checks**: Liveness and readiness endpoints for service monitoring.
+- **Root**:
+    - `GET /`: Friendly welcome message with API documentation link.
+- **Health Checks**: 
+    - `GET /v1/health/liveness`: Simple liveness check (returns 200).
+    - `GET /v1/health/readiness`: Database and environment readiness check.
 - **Development**: Endpoint for seeding users for testing purposes.
 - **Analytics**:
     - `POST /v1/metrics/ingest`: For ingesting metrics data from various sources.
     - `GET /v1/dashboard/tiles`: Aggregates and returns metrics suitable for dashboard display.
+    - `GET /v1/metrics/timeline`: Returns daily metrics timeline for a user (params: user_email, days). Returns array of `{date, sessions, conversions, reach, engagement}`. Enforces strict user isolation (no cross-tenant data).
 - **GitHub Integration**:
     - `GET /v1/github/user`: Retrieves authenticated GitHub user information.
     - `GET /v1/github/repos`: Lists public repositories for the authenticated user.
 - **Email Digests** (Resend integration with rate limiting and retry):
-    - `POST /v1/digest/weekly`: Sends weekly digest emails via Resend API. Supports `scope: "email"` for single user or `scope: "all"` for all users. Includes rate limiting (10-minute cooldown) and automatic retry with exponential backoff (3 attempts: 0.5s, 1s, 2s).
+    - `POST /v1/digest/run`: Send digest to a specific user. Body: `{user_email, days}`. Resolves email to account_id (strict match), queries metrics for that account only, sends personalized digest. Returns `{sent, user_email, period_start, period_end, days}`.
+    - `POST /v1/digest/run-all`: Admin endpoint to send digest to all users. Body: `{days}`. Iterates all users with 0.5s throttling to avoid provider limits.
+    - `POST /v1/digest/weekly`: Legacy weekly digest endpoint. Supports `scope: "email"` for single user or `scope: "all"` for all users. Includes rate limiting (10-minute cooldown) and automatic retry with exponential backoff (3 attempts: 0.5s, 1s, 2s).
     - `GET /v1/digest/preview`: Returns HTML preview of digest email for visual QA (no email sent).
     - `POST /v1/digest/test`: Sends test digest email to specified address for integration verification.
     - `GET /v1/digest/status`: Returns status of the last digest run (started_at, finished_at, sent count, error count).
@@ -50,7 +57,7 @@ The API provides several categories of endpoints:
 All protected API endpoints require Bearer token authentication using a `FASTAPI_SECRET_KEY`.
 
 ### Configuration
-The application is configured to run on `0.0.0.0` at port `5000`. **CORS is locked down** to specific origins (`app.livinglytics.com`, `www.livinglytics.com`) for production security. Only GET, POST, and OPTIONS methods are allowed with Authorization and Content-Type headers. Environment variables manage database connection strings (DATABASE_URL for direct connection on port 5432, with automatic fallback to connection pooler on port 6543 for IPv6 issues), Supabase keys, and the FastAPI secret key. Logging is configured at INFO level for production visibility, including [WEEKLY DIGEST], [DIGEST PREVIEW], [DIGEST TEST], [RESEND WEBHOOK], and [RESEND] retry logging.
+The application is configured to run on `0.0.0.0` at port `5000`. **CORS is locked down** to Base44 domains: `livinglytics.base44.app`, `livinglytics.com`, and `localhost:5173` (for local development). Only GET, POST, and OPTIONS methods are allowed with Authorization and Content-Type headers. Environment variables manage database connection strings (DATABASE_URL for direct connection on port 5432, with automatic fallback to connection pooler on port 6543 for IPv6 issues), Supabase keys, and the FastAPI secret key. Logging is configured at INFO level for production visibility, including [WEEKLY DIGEST], [DIGEST RUN], [DIGEST RUN-ALL], [METRICS TIMELINE], [DIGEST PREVIEW], [DIGEST TEST], [RESEND WEBHOOK], and [RESEND] retry logging.
 
 ## External Dependencies
 - **Supabase PostgreSQL**: The primary database for the application, accessed via direct connection (port 5432) for production stability.
@@ -65,7 +72,7 @@ The application is configured to run on `0.0.0.0` at port `5000`. **CORS is lock
 
 ## Production Deployment Notes
 - Use DATABASE_URL with direct connection string (port 5432) in deployment secrets
-- CORS is locked to `app.livinglytics.com` and `www.livinglytics.com` (hardcoded for security)
+- CORS is locked to Base44 domains: `livinglytics.base44.app`, `livinglytics.com`, and `localhost:5173` (hardcoded for security)
 - **Required Resend Environment Variables**:
   - `RESEND_API_KEY`: API key from Resend dashboard
   - `MAIL_FROM`: Verified sender email address (e.g., noreply@livinglytics.com)
