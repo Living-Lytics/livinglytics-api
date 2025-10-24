@@ -1,0 +1,43 @@
+Goal: Seed 14 days of demo metrics via the API, verify tiles, preview the email, and send a test.
+
+Do the following tasks in order:
+
+1) Define these shell vars (adjust the email if needed):
+   export BASE="https://api.livinglytics.com"
+   export KEY="$FASTAPI_SECRET_KEY"
+   export EMAIL="demo@livinglytics.app"
+
+2) Seed 14 days of GA4-like metrics (sessions, conversions):
+   for i in $(seq 14 -1 1); do
+     D=$(date -u -d "$i days ago" +%Y-%m-%d)
+     S=$(( 800 + RANDOM % 900 ))         # 800–1699 sessions
+     C=$(( S / (10 + RANDOM % 20) ))     # conversions scaled off sessions
+     curl -s -X POST "$BASE/v1/metrics/ingest" \
+       -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+       -d '{"email":"'"$EMAIL"'","source_name":"ga4","metric_date":"'"$D"'","data":{"sessions":'"$S"',"conversions":'"$C"'}}' >/dev/null
+     echo "Seeded GA4 $D (sessions=$S, conversions=$C)"
+   done
+
+3) Seed 14 days of social metrics (reach, engagement) to enrich the digest:
+   for i in $(seq 14 -1 1); do
+     D=$(date -u -d "$i days ago" +%Y-%m-%d)
+     R=$(( 2000 + RANDOM % 4000 ))       # 2k–6k reach
+     E=$(( 80 + RANDOM % 140 ))          # 80–219 engagement
+     curl -s -X POST "$BASE/v1/metrics/ingest" \
+       -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+       -d '{"email":"'"$EMAIL"'","source_name":"instagram","metric_date":"'"$D"'","data":{"reach":'"$R"',"engagement":'"$E"'}}' >/dev/null
+     echo "Seeded IG $D (reach=$R, engagement=$E)"
+   done
+
+4) Sanity check dashboard tiles (should reflect seeded ranges):
+   curl -s -H "Authorization: Bearer $KEY" "$BASE/v1/dashboard/tiles?email=$EMAIL" | python -m json.tool
+
+5) Preview the digest HTML in-browser (use a REST client with the Bearer header to view nicely):
+   # prints status code (200 expected); use a REST client to view the HTML with header auth
+   curl -s -o /dev/null -w "%{http_code}\n" \
+     -H "Authorization: Bearer $KEY" "$BASE/v1/digest/preview?email=$EMAIL"
+
+6) Send a real test email:
+   curl -s -X POST -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+     -d '{"email":"'"$EMAIL"'"}' \
+     "$BASE/v1/digest/test" | python -m json.tool

@@ -283,10 +283,19 @@ def _collect_kpis_for_user(email: str, start_date: date, end_date: date, db: Ses
         .group_by(Metric.metric_name)
     ).all()
     
+    # Map metric names from database (without prefix) to KPI keys (with ig_ prefix)
+    metric_mapping = {
+        "sessions": "ig_sessions",
+        "conversions": "ig_conversions",
+        "reach": "ig_reach",
+        "engagement": "ig_engagement"
+    }
+    
     kpis = {"ig_sessions": 0.0, "ig_conversions": 0.0, "ig_reach": 0.0, "ig_engagement": 0.0}
     for metric_name, total in metrics:
-        if metric_name in kpis:
-            kpis[metric_name] = float(total) if total else 0.0
+        kpi_key = metric_mapping.get(metric_name)
+        if kpi_key:
+            kpis[kpi_key] = float(total) if total else 0.0
     
     return kpis
 
