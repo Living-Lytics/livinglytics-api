@@ -569,16 +569,17 @@ async def resend_webhook(request: Request, db: Session = Depends(get_db)):
         provider_id = body.get("id") or body.get("data", {}).get("email_id")
         subject = body.get("subject") or body.get("data", {}).get("subject")
         
-        # Store event in database
+        # Store event in database (PostgreSQL auto-converts string to jsonb)
+        payload_json = json.dumps(body)
         db.execute(text("""
             INSERT INTO email_events(email, event_type, provider_id, subject, payload)
-            VALUES (:email, :event_type, :provider_id, :subject, CAST(:payload AS jsonb))
+            VALUES (:email, :event_type, :provider_id, :subject, :payload)
         """), {
             "email": email,
             "event_type": event_type,
             "provider_id": provider_id,
             "subject": subject,
-            "payload": json.dumps(body)
+            "payload": payload_json
         })
         db.commit()
         
