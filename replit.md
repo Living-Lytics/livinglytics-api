@@ -23,7 +23,7 @@ The API is built using Python 3.11 and FastAPI for high-performance web services
 ### Database Schema
 The system uses a PostgreSQL database with five core tables:
 - **Users**: Stores user information (`id`, `email`, `org_id`, `created_at`).
-- **Data Sources**: Manages connections to external data sources, including OAuth tokens (`id`, `user_id`, `source_name`, `account_ref`, `access_token`, `refresh_token`, `expires_at`, `created_at`, `updated_at`).
+- **Data Sources**: Manages connections to external data sources, including OAuth tokens (`id`, `user_id`, `source_name`, `account_ref`, `access_token`, `refresh_token`, `expires_at`, `created_at`, `updated_at`). Used for Google OAuth (source_name="google") and other integrations.
 - **Metrics**: Stores collected metric data, linked to users and sources (`id`, `user_id`, `source_name`, `metric_date`, `metric_name`, `metric_value`, `meta`, `created_at`).
 - **Email Events**: Tracks email delivery events from Resend webhooks (`id`, `email`, `event_type`, `provider_id`, `subject`, `payload`, `created_at`). Used for monitoring email delivery, bounces, opens, clicks, and complaints.
 - **Digest Runs**: Tracks weekly digest execution with rate limiting (`id`, `started_at`, `finished_at`, `sent`, `errors`). Prevents duplicate runs within 10 minutes.
@@ -44,6 +44,10 @@ The API provides several categories of endpoints:
 - **GitHub Integration**:
     - `GET /v1/github/user`: Retrieves authenticated GitHub user information.
     - `GET /v1/github/repos`: Lists public repositories for the authenticated user.
+- **Google OAuth / GA4 Integration**:
+    - `GET /v1/connections/google/init`: Initiate Google OAuth flow for GA4. Query param: `email`. Redirects to Google consent screen with analytics.readonly scope. Uses state parameter to track user email.
+    - `GET /v1/connections/google/callback`: OAuth callback endpoint. Receives authorization code, exchanges for access/refresh tokens, stores in data_sources table. Logs "[OAUTH] Google connected for user=<email>".
+    - `GET /v1/connections/status`: **Auth required** - Returns list of connected providers (google, etc.) with token expiration timestamps for a user. Query param: `email`.
 - **Email Digests** (Resend integration with rate limiting and retry):
     - `POST /v1/digest/run`: Send digest to a specific user. Body: `{user_email, days}`. Resolves email to account_id (strict match), queries metrics for that account only, sends personalized digest. Returns `{sent, user_email, period_start, period_end, days}`.
     - `POST /v1/digest/scheduled-run-all`: **Admin endpoint** (requires ADMIN_TOKEN) to manually trigger weekly digest for all opted-in users. Hidden from schema. Uses scheduler logic with idempotent tracking.
@@ -98,6 +102,9 @@ The application is configured to run on `0.0.0.0` at port `5000`. **CORS is lock
   - `RESEND_API_KEY`: API key from Resend dashboard
   - `MAIL_FROM`: Verified sender email address (e.g., noreply@livinglytics.com)
   - `MAIL_FROM_NAME`: Display name for emails (default: "Living Lytics")
+  - `GOOGLE_CLIENT_ID`: Google OAuth client ID from Google Cloud Console
+  - `GOOGLE_CLIENT_SECRET`: Google OAuth client secret
+  - `GOOGLE_OAUTH_REDIRECT`: OAuth callback URL (e.g., https://api.livinglytics.com/v1/connections/google/callback)
 - **Optional Environment Variables**:
   - `SENTRY_DSN`: Sentry DSN for error tracking (optional)
   - `ENV`: Environment name for logging/Sentry (default: "production")
@@ -129,3 +136,4 @@ The application is configured to run on `0.0.0.0` at port `5000`. **CORS is lock
   - Structured JSON logging with request_id for distributed tracing
   - Optional Sentry error tracking
   - Thread-safe rate limiting for admin operations
+  - **Google OAuth integration** for GA4 connectivity with analytics.readonly scope, automatic token refresh storage, and connection status tracking

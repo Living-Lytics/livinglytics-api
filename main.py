@@ -1626,11 +1626,59 @@ GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 GOOGLE_OAUTH_REDIRECT = os.getenv("GOOGLE_OAUTH_REDIRECT")
 
+# In-memory OAuth state storage (secure random nonce mapping)
+# Format: {state_token: {"email": email, "expires_at": timestamp}}
+oauth_state_store: Dict[str, Dict[str, Any]] = {}
+oauth_state_lock = threading.Lock()
+
+def generate_oauth_state(email: str) -> str:
+    """Generate cryptographically secure OAuth state token."""
+    state_token = hashlib.sha256(
+        f"{email}-{time.time()}-{uuid.uuid4()}".encode()
+    ).hexdigest()
+    
+    with oauth_state_lock:
+        # Clean expired states (older than 10 minutes)
+        now = time.time()
+        expired_keys = [
+            k for k, v in oauth_state_store.items()
+            if v["expires_at"] < now
+        ]
+        for k in expired_keys:
+            del oauth_state_store[k]
+        
+        # Store new state
+        oauth_state_store[state_token] = {
+            "email": email,
+            "expires_at": now + 600  # 10 minutes
+        }
+    
+    return state_token
+
+def verify_oauth_state(state_token: str) -> Optional[str]:
+    """Verify OAuth state token and return associated email."""
+    with oauth_state_lock:
+        state_data = oauth_state_store.get(state_token)
+        
+        if not state_data:
+            return None
+        
+        # Check expiration
+        if state_data["expires_at"] < time.time():
+            del oauth_state_store[state_token]
+            return None
+        
+        # Delete state after use (one-time use)
+        email = state_data["email"]
+        del oauth_state_store[state_token]
+        
+        return email
+
 @app.get("/v1/connections/google/init")
 def google_oauth_init(email: str, db: Session = Depends(get_db)):
     """
     Initiate Google OAuth flow for GA4 integration.
-    Redirects user to Google consent screen.
+    Redirects user to Google consent screen with CSRF protection.
     """
     if not GOOGLE_CLIENT_ID or not GOOGLE_OAUTH_REDIRECT:
         raise HTTPException(status_code=500, detail="Google OAuth not configured")
@@ -1643,6 +1691,9 @@ def google_oauth_init(email: str, db: Session = Depends(get_db)):
     if not user_result:
         raise HTTPException(status_code=404, detail=f"User not found: {email}")
     
+    # Generate cryptographically secure state token
+    state_token = generate_oauth_state(email)
+    
     # Build Google OAuth URL
     oauth_params = {
         "client_id": GOOGLE_CLIENT_ID,
@@ -1651,7 +1702,7 @@ def google_oauth_init(email: str, db: Session = Depends(get_db)):
         "access_type": "offline",
         "include_granted_scopes": "true",
         "response_type": "code",
-        "state": email,  # Pass email via state parameter
+        "state": state_token,  # Secure random state token
         "prompt": "consent"  # Force consent to get refresh token
     }
     
@@ -1664,13 +1715,20 @@ def google_oauth_init(email: str, db: Session = Depends(get_db)):
 @app.get("/v1/connections/google/callback")
 def google_oauth_callback(code: str, state: str, db: Session = Depends(get_db)):
     """
-    Handle Google OAuth callback.
+    Handle Google OAuth callback with CSRF protection.
     Exchanges authorization code for access/refresh tokens.
     """
     if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET or not GOOGLE_OAUTH_REDIRECT:
         raise HTTPException(status_code=500, detail="Google OAuth not configured")
     
-    email = state  # Email passed via state parameter
+    # Verify state token (CSRF protection)
+    email = verify_oauth_state(state)
+    if not email:
+        logging.error(f"[OAUTH] Invalid or expired state token: {state[:16]}...")
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid or expired OAuth state. Please restart the connection flow."
+        )
     
     # Verify user exists
     user_result = db.execute(
@@ -1678,6 +1736,7 @@ def google_oauth_callback(code: str, state: str, db: Session = Depends(get_db)):
     ).scalar_one_or_none()
     
     if not user_result:
+        logging.error(f"[OAUTH] User not found during callback: {email}")
         raise HTTPException(status_code=404, detail=f"User not found: {email}")
     
     # Exchange code for tokens
