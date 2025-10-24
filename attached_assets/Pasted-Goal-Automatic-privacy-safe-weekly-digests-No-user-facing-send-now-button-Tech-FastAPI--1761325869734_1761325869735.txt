@@ -1,0 +1,84 @@
+Goal: Automatic, privacy-safe weekly digests. No user-facing “send now” button.
+
+Tech:
+- FastAPI (existing)
+- SQLAlchemy (sync, existing)
+- Resend (existing)
+- APScheduler (AsyncIOScheduler) with America/Los_Angeles tz
+- Python zoneinfo (no extra tz lib)
+
+Tasks:
+
+0) Install
+- pip install APScheduler
+
+1) Data model (migrations)
+- users table: add columns
+  - opt_in_digest BOOLEAN NOT NULL DEFAULT TRUE
+  - last_digest_sent_at TIMESTAMP NULL
+- digest_log table (new):
+  - id (pk)
+  - user_id (fk -> users.id)
+  - period_start DATE NOT NULL
+  - period_end   DATE NOT NULL
+  - status TEXT NOT NULL CHECK (status IN ('sent','skipped','error'))
+  - error_message TEXT NULL
+  - created_at TIMESTAMP DEFAULT now()
+  - UNIQUE(user_id, period_start, period_end)  -- idempotency guard
+
+2) Period helper
+- Define "week" = the previous Monday 00:00:00 through Sunday 23:59:59 in America/Los_Angeles.
+- Implement function get_last_completed_week(tz="America/Los_Angeles") -> (period_start_date, period_end_date)
+
+3) Digest renderer & sender
+- Function send_weekly_digest(user_id):
+  a) Resolve user and ensure user.opt_in_digest is TRUE
+  b) Compute (period_start, period_end) using helper
+  c) Check digest_log for existing record (idempotent)
+  d) Query metrics strictly by user.account_id and date in [period_start, period_end]
+     Return aggregates + trend arrays:
+       sessions, conversions, reach, engagement
+  e) Render email (subject: "Your Weekly Living Lytics Digest")
+     Include: totals, 7-day sparkline-friendly list, best day, wow deltas if available
+     Include unsubscribe link: https://api.livinglytics.com/v1/digest/unsubscribe?token=<jwt>
+  f) Send via Resend; on success insert digest_log(status='sent'); update users.last_digest_sent_at
+
+4) Scheduler
+- Use AsyncIOScheduler with tz=zoneinfo.ZoneInfo("America/Los_Angeles")
+- Job: run_weekly_digests()
+  - For each user with opt_in_digest=TRUE:
+      try send_weekly_digest(user.id)
+      catch exceptions: write digest_log(status='error', error_message)
+- Schedule: Every Monday at 07:00 (hour=7, minute=0, day_of_week='mon')
+- Start scheduler in FastAPI startup event; shut down in shutdown event.
+
+5) Admin-only endpoints (internal key required via Authorization: Bearer <ADMIN_TOKEN>)
+- POST /v1/digest/run-all
+  Body: {"period": "last_completed_week" }  // optional future support
+  Action: calls run_weekly_digests() now (idempotent due to digest_log)
+- GET /v1/digest/schedule
+  Return: {"timezone":"America/Los_Angeles","next_run":"...","last_run":"..."} from APScheduler, plus last global results
+
+6) User preferences & unsubscribe
+- GET /v1/digest/preferences  (auth: current user) -> { "opt_in_digest": true/false, "last_digest_sent_at": ... }
+- PUT /v1/digest/preferences  Body: {"opt_in_digest": true/false} (auth: current user)
+- GET /v1/digest/unsubscribe?token=...
+  - token = signed JWT containing {user_id, purpose:'unsubscribe'}
+  - When hit, set opt_in_digest=FALSE and render a tiny HTML “You’re unsubscribed.”
+
+7) Remove/lock user-triggered send
+- If /v1/digest/run exists, restrict to admin key only, or delete it.
+
+8) CORS (already set)
+ALLOW_ORIGINS = [
+  "https://livinglytics.base44.app",
+  "https://livinglytics.com",
+  "http://localhost:5173"
+]
+
+9) Smoke tests
+- GET /v1/health/liveness -> 200
+- GET /v1/health/readiness -> {database:true,...}
+- GET /v1/digest/schedule -> shows next run (Mon 07:00 PT)
+- POST /v1/digest/run-all (admin) -> processes all opted-in users once (no duplicates)
+- Verify digest_log unique constraint works

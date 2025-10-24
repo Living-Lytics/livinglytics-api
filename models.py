@@ -14,6 +14,8 @@ class User(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
     email: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
     org_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
+    opt_in_digest: Mapped[bool] = mapped_column(server_default=text("TRUE"), nullable=False)
+    last_digest_sent_at: Mapped[Optional[datetime]] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
 
 class DataSource(Base):
@@ -37,4 +39,14 @@ class Metric(Base):
     metric_name: Mapped[str] = mapped_column(Text, nullable=False)
     metric_value: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
     meta: Mapped[dict] = mapped_column(JSON, server_default=text("'{}'::jsonb"))
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+
+class DigestLog(Base):
+    __tablename__ = "digest_log"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True, nullable=False)
+    period_start: Mapped[date] = mapped_column(Date, nullable=False)
+    period_end: Mapped[date] = mapped_column(Date, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
