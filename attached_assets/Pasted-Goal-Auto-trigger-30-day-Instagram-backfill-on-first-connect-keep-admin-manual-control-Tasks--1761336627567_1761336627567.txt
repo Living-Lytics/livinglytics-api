@@ -1,0 +1,42 @@
+Goal: Auto-trigger 30-day Instagram backfill on first connect, keep admin manual control.
+
+Tasks:
+
+1) On /v1/connections/instagram/callback (after storing tokens + ig_user_id):
+   - Check metrics table for this user_id where source='instagram'.
+   - If count == 0:
+       log "[SYNC] Running initial 30-day IG backfill for <email>"
+       call run_instagram_sync(user_id, days=30)  # new helper below
+   - Return JSON: {"connected": true, "provider": "instagram", "backfill_started": true}
+
+2) Add helper: run_instagram_sync(user_id: UUID, days:int=30)
+   - Uses long-lived token; refresh if near expiry.
+   - For each day in [today-days .. yesterday]:
+       * Daily insights:
+         GET https://graph.facebook.com/v19.0/{ig_user_id}/insights
+           ?metric=reach,impressions,profile_views&period=day&since=<start>&until=<end>
+       * Media for the day:
+         GET https://graph.facebook.com/v19.0/{ig_user_id}/media
+           ?fields=timestamp,like_count,comments_count,insights.metric(saves)
+           &since=<day_start>&until=<day_end>&limit=100
+         engagement = sum(like_count + comments_count + saves)
+       * Upsert metrics(user_id, date, reach, engagement, source='instagram')
+   - Respect API limits; sleep if needed. Log [SYNC] progress.
+
+3) Nightly job adjustment (already exists):
+   - If provider='instagram' connected: run run_instagram_sync(user_id, days=1) for yesterday.
+
+4) Token refresh:
+   - If long-lived token expires <7 days: refresh it (per Meta docs), update expires_at.
+
+5) Admin manual trigger (unchanged):
+   - POST /v1/sync/run?email=<e>&provider=instagram  (ADMIN_TOKEN; include_in_schema=False)
+
+6) Status endpoint:
+   - GET /v1/connections/status includes instagram:
+     {"provider":"instagram","username":"...", "expires_at":"...", "connected_at":"..."}
+
+7) Quick tests:
+   - Complete OAuth, then check logs for "[SYNC] Running initial 30-day IG backfill".
+   - Verify /v1/metrics/timeline/month?email=<e>&days=30 shows reach/engagement.
+   - Manual: POST /v1/sync/run?email=<e>&provider=instagram (admin) → yesterday upsert.
