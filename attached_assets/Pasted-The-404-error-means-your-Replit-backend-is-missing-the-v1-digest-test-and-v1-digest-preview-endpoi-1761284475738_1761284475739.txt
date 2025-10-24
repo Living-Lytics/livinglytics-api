@@ -1,0 +1,241 @@
+The 404 error means your Replit backend is missing the /v1/digest/test and /v1/digest/preview endpoints. Let me give you the Python code to add to your FastAPI backend:
+
+Add these endpoints to your Replit main.py:
+
+# Add these imports at the top if not already there
+from datetime import datetime, timedelta
+import resend
+import os
+
+# Configure Resend (if using Resend for emails)
+resend.api_key = os.getenv("RESEND_API_KEY")
+
+# ADD THIS ENDPOINT - Preview digest HTML without sending
+@app.get("/v1/digest/preview", dependencies=[Depends(require_api_key)])
+def preview_digest(email: str, db: Session = Depends(get_db)):
+    """Preview the weekly digest HTML without sending email."""
+    logging.info(f"[DIGEST PREVIEW] Generating preview for {email}")
+    
+    # Get user
+    user = db.execute(select(User).where(User.email == email)).scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Get metrics for last 7 days
+    week_ago = datetime.utcnow() - timedelta(days=7)
+    metrics_query = db.execute(
+        select(Metric).where(
+            Metric.user_email == email,
+            Metric.timestamp >= week_ago
+        )
+    ).scalars().all()
+    
+    # Aggregate metrics
+    summary_metrics = {
+        "sessions": sum(m.value for m in metrics_query if m.metric_name == "sessions"),
+        "conversions": sum(m.value for m in metrics_query if m.metric_name == "conversions"),
+        "ig_reach": sum(m.value for m in metrics_query if m.metric_name == "ig_reach"),
+        "engagement": sum(m.value for m in metrics_query if m.metric_name == "engagement"),
+    }
+    
+    # Generate HTML
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Weekly Analytics Digest</title>
+    </head>
+    <body style="margin: 0; padding: 0; font-family: Arial, sans-serif; background-color: #f3f4f6;">
+        <div style="max-width: 600px; margin: 0 auto; background-color: #ffffff;">
+            <!-- Header -->
+            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 40px 20px; text-align: center;">
+                <h1 style="color: #ffffff; margin: 0; font-size: 28px;">📊 Your Weekly Analytics</h1>
+                <p style="color: #e0e7ff; margin: 10px 0 0 0; font-size: 14px;">Living Lytics • {datetime.utcnow().strftime('%B %d, %Y')}</p>
+            </div>
+            
+            <!-- Content -->
+            <div style="padding: 40px 30px;">
+                <p style="font-size: 16px; color: #374151; margin: 0 0 10px 0;">Hi there! 👋</p>
+                <p style="font-size: 14px; color: #6b7280; margin: 0 0 30px 0;">Here's your analytics summary for the past 7 days:</p>
+                
+                <!-- Metrics Grid -->
+                <table style="width: 100%; border-collapse: collapse; margin-bottom: 30px;">
+                    <tr>
+                        <td style="padding: 20px; text-align: center; background-color: #f9fafb; border-radius: 8px; width: 48%;">
+                            <div style="font-size: 36px; font-weight: bold; color: #667eea; margin-bottom: 5px;">{int(summary_metrics['sessions'])}</div>
+                            <div style="font-size: 12px; color: #6b7280; text-transform: uppercase; letter-spacing: 1px;">Sessions</div>
+                        </td>
+                        <td style="width: 4%;"></td>
+                        <td style="padding: 20px; text-align: center; background-color: #f9fafb; border-radius: 8px; width: 48%;">
+                            <div style="font-size: 36px; font-weight: bold; color: #10b981; margin-bottom: 5px;">{int(summary_metrics['conversions'])}</div>
+                            <div style="font-size: 12px; color: #6b7280; text-transform: uppercase; letter-spacing: 1px;">Conversions</div>
+                        </td>
+                    </tr>
+                    <tr><td colspan="3" style="height: 15px;"></td></tr>
+                    <tr>
+                        <td style="padding: 20px; text-align: center; background-color: #f9fafb; border-radius: 8px;">
+                            <div style="font-size: 36px; font-weight: bold; color: #f59e0b; margin-bottom: 5px;">{int(summary_metrics['ig_reach'])}</div>
+                            <div style="font-size: 12px; color: #6b7280; text-transform: uppercase; letter-spacing: 1px;">Instagram Reach</div>
+                        </td>
+                        <td style="width: 4%;"></td>
+                        <td style="padding: 20px; text-align: center; background-color: #f9fafb; border-radius: 8px;">
+                            <div style="font-size: 36px; font-weight: bold; color: #ec4899; margin-bottom: 5px;">{int(summary_metrics['engagement'])}</div>
+                            <div style="font-size: 12px; color: #6b7280; text-transform: uppercase; letter-spacing: 1px;">Engagement</div>
+                        </td>
+                    </tr>
+                </table>
+                
+                <!-- CTA Button -->
+                <div style="text-align: center; margin: 30px 0;">
+                    <a href__="https://your-app-url.base44.com/Dashboard" 
+                       style="display: inline-block; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+                              color: #ffffff; text-decoration: none; padding: 14px 32px; border-radius: 8px; 
+                              font-weight: bold; font-size: 14px;">
+                        View Full Dashboard →
+                    </a>
+                </div>
+            </div>
+            
+            <!-- Footer -->
+            <div style="padding: 30px; text-align: center; background-color: #f9fafb; border-top: 1px solid #e5e7eb;">
+                <p style="color: #9ca3af; font-size: 12px; margin: 0 0 10px 0;">
+                    Living Lytics • Where Data Comes Alive
+                </p>
+                <p style="color: #9ca3af; font-size: 11px; margin: 0;">
+                    You're receiving this because you signed up for weekly analytics digests.
+                </p>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+    
+    return HTMLResponse(content=html_content)
+
+
+# ADD THIS ENDPOINT - Send test email
+@app.post("/v1/digest/test", dependencies=[Depends(require_api_key)])
+def send_test_digest(request: dict, db: Session = Depends(get_db)):
+    """Send a test digest email to a specific user."""
+    email = request.get("email")
+    if not email:
+        raise HTTPException(status_code=400, detail="email is required")
+    
+    logging.info(f"[DIGEST TEST] Sending test digest to {email}")
+    
+    # Get user
+    user = db.execute(select(User).where(User.email == email)).scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Get metrics for last 7 days
+    week_ago = datetime.utcnow() - timedelta(days=7)
+    metrics_query = db.execute(
+        select(Metric).where(
+            Metric.user_email == email,
+            Metric.timestamp >= week_ago
+        )
+    ).scalars().all()
+    
+    # Aggregate metrics
+    summary_metrics = {
+        "sessions": sum(m.value for m in metrics_query if m.metric_name == "sessions"),
+        "conversions": sum(m.value for m in metrics_query if m.metric_name == "conversions"),
+        "ig_reach": sum(m.value for m in metrics_query if m.metric_name == "ig_reach"),
+        "engagement": sum(m.value for m in metrics_query if m.metric_name == "engagement"),
+    }
+    
+    # Generate same HTML as preview
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Weekly Analytics Digest</title>
+    </head>
+    <body style="margin: 0; padding: 0; font-family: Arial, sans-serif; background-color: #f3f4f6;">
+        <div style="max-width: 600px; margin: 0 auto; background-color: #ffffff;">
+            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 40px 20px; text-align: center;">
+                <h1 style="color: #ffffff; margin: 0; font-size: 28px;">📊 Your Weekly Analytics</h1>
+                <p style="color: #e0e7ff; margin: 10px 0 0 0; font-size: 14px;">Living Lytics • {datetime.utcnow().strftime('%B %d, %Y')}</p>
+            </div>
+            
+            <div style="padding: 40px 30px;">
+                <p style="font-size: 16px; color: #374151; margin: 0 0 10px 0;">Hi there! 👋</p>
+                <p style="font-size: 14px; color: #6b7280; margin: 0 0 30px 0;">Here's your analytics summary for the past 7 days:</p>
+                
+                <table style="width: 100%; border-collapse: collapse; margin-bottom: 30px;">
+                    <tr>
+                        <td style="padding: 20px; text-align: center; background-color: #f9fafb; border-radius: 8px; width: 48%;">
+                            <div style="font-size: 36px; font-weight: bold; color: #667eea; margin-bottom: 5px;">{int(summary_metrics['sessions'])}</div>
+                            <div style="font-size: 12px; color: #6b7280; text-transform: uppercase; letter-spacing: 1px;">Sessions</div>
+                        </td>
+                        <td style="width: 4%;"></td>
+                        <td style="padding: 20px; text-align: center; background-color: #f9fafb; border-radius: 8px; width: 48%;">
+                            <div style="font-size: 36px; font-weight: bold; color: #10b981; margin-bottom: 5px;">{int(summary_metrics['conversions'])}</div>
+                            <div style="font-size: 12px; color: #6b7280; text-transform: uppercase; letter-spacing: 1px;">Conversions</div>
+                        </td>
+                    </tr>
+                    <tr><td colspan="3" style="height: 15px;"></td></tr>
+                    <tr>
+                        <td style="padding: 20px; text-align: center; background-color: #f9fafb; border-radius: 8px;">
+                            <div style="font-size: 36px; font-weight: bold; color: #f59e0b; margin-bottom: 5px;">{int(summary_metrics['ig_reach'])}</div>
+                            <div style="font-size: 12px; color: #6b7280; text-transform: uppercase; letter-spacing: 1px;">Instagram Reach</div>
+                        </td>
+                        <td style="width: 4%;"></td>
+                        <td style="padding: 20px; text-align: center; background-color: #f9fafb; border-radius: 8px;">
+                            <div style="font-size: 36px; font-weight: bold; color: #ec4899; margin-bottom: 5px;">{int(summary_metrics['engagement'])}</div>
+                            <div style="font-size: 12px; color: #6b7280; text-transform: uppercase; letter-spacing: 1px;">Engagement</div>
+                        </td>
+                    </tr>
+                </table>
+                
+                <div style="text-align: center; margin: 30px 0;">
+                    <a href__="https://your-app-url.base44.com/Dashboard" 
+                       style="display: inline-block; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+                              color: #ffffff; text-decoration: none; padding: 14px 32px; border-radius: 8px; 
+                              font-weight: bold; font-size: 14px;">
+                        View Full Dashboard →
+                    </a>
+                </div>
+            </div>
+            
+            <div style="padding: 30px; text-align: center; background-color: #f9fafb; border-top: 1px solid #e5e7eb;">
+                <p style="color: #9ca3af; font-size: 12px; margin: 0 0 10px 0;">
+                    Living Lytics • Where Data Comes Alive
+                </p>
+                <p style="color: #9ca3af; font-size: 11px; margin: 0;">
+                    You're receiving this because you signed up for weekly analytics digests.
+                </p>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+    
+    # Send email using Resend
+    try:
+        result = resend.Emails.send({
+            "from": "Living Lytics <digest@livinglytics.com>",
+            "to": [email],
+            "subject": f"📊 Your Weekly Analytics Digest",
+            "html": html_content
+        })
+        
+        logging.info(f"[DIGEST TEST] Email sent successfully: {result}")
+        
+        return {
+            "success": True,
+            "message": "Test email sent successfully",
+            "email_id": result.get("id"),
+            "recipient": email
+        }
+    except Exception as e:
+        logging.error(f"[DIGEST TEST] Failed to send email: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to send email: {str(e)}")
+Also add this import at the top:
+
+from fastapi.responses import HTMLResponse
