@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from db import get_db, engine
-from models import Base, User, Metric, DigestLog
+from models import Base, User, Metric, DigestLog, EmailEvent
 from github import Github, GithubException
 from mailer import send_email_resend
 from scheduler_utils import (
@@ -913,6 +913,123 @@ def metrics_timeline(
         headers={"Cache-Control": "max-age=300"}  # Cache for 5 minutes
     )
 
+# Timeline Variants - Hourly and Monthly
+@app.get("/v1/metrics/timeline/day", dependencies=[Depends(require_api_key)])
+def metrics_timeline_day(
+    request: Request,
+    user_email: Optional[str] = None,
+    email: Optional[str] = None,
+    hours: int = 24,
+    db: Session = Depends(get_db)
+):
+    """Get hourly metrics timeline for the last N hours. Returns 24 hourly data points (zero-filled).
+    
+    Accepts either 'user_email' or 'email' parameter for compatibility with Base44 frontend.
+    """
+    # Support both email and user_email parameters
+    user_email_param = user_email or email
+    if not user_email_param:
+        raise HTTPException(status_code=400, detail="Missing 'email' or 'user_email' parameter")
+    
+    logging.info(f"[METRICS TIMELINE DAY] email={user_email_param}, hours={hours}")
+    
+    # Resolve email to account_id (strict match)
+    user = db.execute(select(User).where(User.email == user_email_param)).scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail=f"User not found: {user_email_param}")
+    
+    # For hourly data, we'll aggregate today's metrics and distribute evenly
+    # In a real system, you'd store hourly metrics, but we'll zero-fill for now
+    now = datetime.now(PT)
+    timeline = []
+    for i in range(hours):
+        hour_time = now - timedelta(hours=hours-i-1)
+        timeline.append({
+            "hour": hour_time.strftime("%Y-%m-%d %H:00"),
+            "sessions": 0,
+            "conversions": 0,
+            "reach": 0,
+            "engagement": 0
+        })
+    
+    logging.info(f"[METRICS TIMELINE DAY] Returning {len(timeline)} hourly points (zero-filled) for user {user.id}")
+    
+    return JSONResponse(
+        content=timeline,
+        headers={"Cache-Control": "max-age=300"}
+    )
+
+@app.get("/v1/metrics/timeline/month", dependencies=[Depends(require_api_key)])
+def metrics_timeline_month(
+    request: Request,
+    user_email: Optional[str] = None,
+    email: Optional[str] = None,
+    days: int = 30,
+    db: Session = Depends(get_db)
+):
+    """Get daily metrics timeline for the last N days (default 30). Returns daily data points.
+    
+    Accepts either 'user_email' or 'email' parameter for compatibility with Base44 frontend.
+    """
+    # Support both email and user_email parameters
+    user_email_param = user_email or email
+    if not user_email_param:
+        raise HTTPException(status_code=400, detail="Missing 'email' or 'user_email' parameter")
+    
+    logging.info(f"[METRICS TIMELINE MONTH] email={user_email_param}, days={days}")
+    
+    # Resolve email to account_id (strict match)
+    user = db.execute(select(User).where(User.email == user_email_param)).scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail=f"User not found: {user_email_param}")
+    
+    # Calculate date range
+    end_date = date.today()
+    start_date = end_date - timedelta(days=days - 1)
+    
+    # Initialize timeline with all dates in range (with zeros)
+    timeline = {}
+    current_date = start_date
+    while current_date <= end_date:
+        timeline[current_date.isoformat()] = {
+            "date": current_date.isoformat(),
+            "sessions": 0,
+            "conversions": 0,
+            "reach": 0,
+            "engagement": 0
+        }
+        current_date += timedelta(days=1)
+    
+    # Query metrics grouped by date (ensuring no cross-tenant data)
+    results = db.execute(
+        select(
+            Metric.metric_date,
+            Metric.metric_name,
+            func.sum(Metric.metric_value).label("total")
+        )
+        .where(Metric.user_id == user.id)
+        .where(Metric.metric_date >= start_date)
+        .where(Metric.metric_date <= end_date)
+        .group_by(Metric.metric_date, Metric.metric_name)
+        .order_by(Metric.metric_date)
+    ).all()
+    
+    # Fill in actual data
+    for metric_date, metric_name, total in results:
+        date_str = metric_date.isoformat()
+        if metric_name in timeline[date_str]:
+            timeline[date_str][metric_name] = int(total) if total else 0
+    
+    # Convert to sorted list
+    timeline_list = sorted(timeline.values(), key=lambda x: x["date"])
+    
+    logging.info(f"[METRICS TIMELINE MONTH] Returning {len(timeline_list)} days of data for user {user.id}")
+    
+    return JSONResponse(
+        content=timeline_list,
+        headers={"Cache-Control": "max-age=300"}
+    )
+
 # Webhook and Email Events Endpoints
 
 @app.post("/v1/webhooks/resend")
@@ -1001,39 +1118,110 @@ def resend_webhook_check():
     return {"webhook_secret_present": has_secret}
 
 @app.get("/v1/email-events/summary", dependencies=[Depends(require_api_key)])
-def email_events_summary(db: Session = Depends(get_db)):
-    """Get summary of email events from last 24 hours."""
+def email_events_summary(
+    request: Request,
+    user_email: Optional[str] = None,
+    email: Optional[str] = None,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    page: int = 1,
+    limit: int = 50,
+    db: Session = Depends(get_db)
+):
+    """Get paginated email events summary with filters.
     
-    # Get counts by event type for last 24 hours
-    last_24h_result = db.execute(text("""
+    Supports filtering by email (account-scoped), date range, and pagination.
+    Returns event counts and paginated event list.
+    """
+    # Support both email and user_email parameters
+    user_email_param = user_email or email
+    
+    # Default date range (last 30 days)
+    if not start:
+        start = (date.today() - timedelta(days=30)).isoformat()
+    if not end:
+        end = date.today().isoformat()
+    
+    logging.info(f"[EMAIL EVENTS] email={user_email_param}, start={start}, end={end}, page={page}, limit={limit}")
+    
+    # Build filters
+    filters = []
+    params = {"start": start, "end": end}
+    
+    if user_email_param:
+        # Resolve email to account_id for strict scoping
+        user = db.execute(select(User).where(User.email == user_email_param)).scalar_one_or_none()
+        if not user:
+            raise HTTPException(status_code=404, detail=f"User not found: {user_email_param}")
+        filters.append("email = :email")
+        params["email"] = user_email_param
+    
+    where_clause = " AND ".join(filters) if filters else "1=1"
+    
+    # Get event counts by type
+    count_query = f"""
         SELECT event_type, COUNT(*) as count
         FROM email_events
-        WHERE created_at >= NOW() - INTERVAL '24 hours'
+        WHERE {where_clause}
+          AND created_at >= :start::date
+          AND created_at < :end::date + INTERVAL '1 day'
         GROUP BY event_type
-    """)).fetchall()
+    """
+    count_result = db.execute(text(count_query), params).fetchall()
+    counts = {row[0]: row[1] for row in count_result}
     
-    last_24h = {row[0]: row[1] for row in last_24h_result}
-    
-    # Get latest 10 events
-    latest_result = db.execute(text("""
-        SELECT email, event_type, created_at
+    # Get total count for pagination
+    total_query = f"""
+        SELECT COUNT(*)
         FROM email_events
-        ORDER BY created_at DESC
-        LIMIT 10
-    """)).fetchall()
+        WHERE {where_clause}
+          AND created_at >= :start::date
+          AND created_at < :end::date + INTERVAL '1 day'
+    """
+    total = db.execute(text(total_query), params).scalar()
     
-    latest = [
+    # Get paginated events
+    offset = (page - 1) * limit
+    events_query = f"""
+        SELECT created_at, event_type, provider_id, subject
+        FROM email_events
+        WHERE {where_clause}
+          AND created_at >= :start::date
+          AND created_at < :end::date + INTERVAL '1 day'
+        ORDER BY created_at DESC
+        LIMIT :limit OFFSET :offset
+    """
+    params["limit"] = limit
+    params["offset"] = offset
+    
+    events_result = db.execute(text(events_query), params).fetchall()
+    events = [
         {
-            "email": row[0],
-            "event_type": row[1],
-            "created_at": row[2].isoformat() if row[2] else None
+            "ts": row[0].isoformat() if row[0] else None,
+            "type": row[1],
+            "message_id": row[2],
+            "subject": row[3]
         }
-        for row in latest_result
+        for row in events_result
     ]
     
+    has_next = (offset + limit) < total
+    
     return {
-        "last_24h": last_24h,
-        "latest": latest
+        "email": user_email_param,
+        "start": start,
+        "end": end,
+        "counts": {
+            "delivered": counts.get("email.delivered", 0),
+            "bounced": counts.get("email.bounced", 0),
+            "opened": counts.get("email.opened", 0),
+            "clicked": counts.get("email.clicked", 0)
+        },
+        "events": events,
+        "page": page,
+        "limit": limit,
+        "total": total,
+        "has_next": has_next
     }
 
 @app.get("/v1/digest/status", dependencies=[Depends(require_api_key)])

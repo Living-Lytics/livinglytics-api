@@ -1,0 +1,46 @@
+Goal: add timeline variants, events pagination/filters, and digest polish.
+
+Tasks:
+1) Timeline variants (privacy-safe)
+   a) GET /v1/metrics/timeline/day?email=<e>&hours=24
+      - Return 24 points (hourly) for the last <hours> (default 24), zero-filled.
+   b) GET /v1/metrics/timeline/month?email=<e>&days=30
+      - Return 30 points (daily) for the last <days> (default 30), zero-filled.
+   c) Param sync: accept both "email" and "user_email". 400 if neither provided.
+   d) Cache-Control: max-age=300 on both endpoints.
+
+2) Email events summary (pagination + filters)
+   - GET /v1/email-events/summary?email=<e>&start=YYYY-MM-DD&end=YYYY-MM-DD&page=1&limit=50
+   - Response:
+     {
+       "email": "...",
+       "start": "YYYY-MM-DD",
+       "end": "YYYY-MM-DD",
+       "counts": { "delivered":0,"bounced":0,"opened":0,"clicked":0 },
+       "events": [ { "ts":"...", "type":"delivered|opened|clicked|bounced", "message_id":"..." } ],
+       "page":1,
+       "limit":50,
+       "total":123,
+       "has_next":true
+     }
+   - Strict scope by account_id for the resolved email.
+   - Add sensible DB indexes for ts/type/account_id.
+
+3) Digest polish
+   - Add WoW deltas (sessions, conversions, reach, engagement) to email content and subject preheader.
+   - Compute “best day” (highest conversions) and include a short highlight line.
+   - Keep idempotency via digest_log (no duplicates).
+
+4) Observability
+   - Optional: Add Sentry (DSN via env). Capture exceptions in scheduler and endpoints.
+   - Ensure structured logs include request_id (generate if missing) and user_id on queries.
+
+5) Security/Docs
+   - Keep admin endpoints protected by ADMIN_TOKEN and include_in_schema=False.
+   - Root “/” returns JSON: {message:"Living Lytics API", docs:"/docs"}.
+
+6) Quick tests (run after deploy)
+   - curl /v1/metrics/timeline/day?email=<e>&hours=24 -> 24 points + Cache-Control
+   - curl /v1/metrics/timeline/month?email=<e>&days=30 -> 30 points + Cache-Control
+   - curl /v1/email-events/summary?email=<e>&page=1&limit=10 -> events + counts + pagination
+   - Verify digest email shows WoW deltas and best day.
