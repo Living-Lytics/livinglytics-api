@@ -473,6 +473,8 @@ def weekly_digest(payload: DigestRequest, db: Session = Depends(get_db)):
 @app.get("/v1/digest/preview", dependencies=[Depends(require_api_key)], response_class=HTMLResponse)
 def digest_preview(email: EmailStr, db: Session = Depends(get_db)):
     """Preview weekly digest HTML without sending (for visual QA)."""
+    logging.info(f"[DIGEST PREVIEW] Called with email: {email}")
+    
     # Calculate date window (last 7 days)
     end_date = date.today()
     start_date = end_date - timedelta(days=7)
@@ -502,6 +504,8 @@ def digest_test(payload: Dict[str, str] = Body(...), db: Session = Depends(get_d
     email = payload.get("email")
     if not email:
         raise HTTPException(status_code=400, detail="email is required")
+    
+    logging.info(f"[DIGEST TEST] Called with email: {email}")
     
     # Calculate date window (last 7 days)
     end_date = date.today()
