@@ -2,6 +2,8 @@ import os
 import json
 import logging
 import requests
+import hmac
+import hashlib
 from datetime import date, datetime, timedelta
 from typing import Dict, Any, Optional, List
 from fastapi import FastAPI, Depends, HTTPException, Header, Body, Request
@@ -37,6 +39,21 @@ app.add_middleware(
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
 )
+
+@app.on_event("startup")
+def on_startup():
+    """Initialize database indexes and constraints on startup."""
+    try:
+        with engine.connect() as conn:
+            # Create unique index on provider_id for idempotent webhook processing
+            conn.execute(text("""
+                CREATE UNIQUE INDEX IF NOT EXISTS email_events_provider_unique 
+                ON email_events(provider_id)
+            """))
+            conn.commit()
+            logging.info("[STARTUP] Created unique index on email_events.provider_id")
+    except Exception as e:
+        logging.error(f"[STARTUP] Failed to create index: {str(e)}")
 
 def require_api_key(authorization: str = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):
@@ -543,53 +560,88 @@ def digest_test(payload: Dict[str, str] = Body(...), db: Session = Depends(get_d
 
 @app.post("/v1/webhooks/resend")
 async def resend_webhook(request: Request, db: Session = Depends(get_db)):
-    """Receive webhook events from Resend (no auth required).
-    
-    SECURITY NOTE: This endpoint currently accepts all requests without signature verification.
-    TODO: Implement Resend webhook signature validation using X-Resend-Signature header
-    to prevent spoofed webhook requests. See: https://resend.com/docs/webhooks#verify-signature
     """
+    Secure webhook endpoint for Resend email events.
+    Verifies HMAC-SHA256 signature sent in X-Resend-Signature,
+    stores event in email_events (idempotent on provider_id),
+    and returns 200 quickly to prevent retry storms.
+    """
+    # 1) Read raw body and signature
+    raw_body: bytes = await request.body()
+    signature = request.headers.get("X-Resend-Signature")
+    secret = os.getenv("RESEND_WEBHOOK_SECRET")
+
+    if not secret:
+        # Misconfiguration safeguard
+        logging.error("[RESEND WEBHOOK] Missing RESEND_WEBHOOK_SECRET")
+        raise HTTPException(status_code=500, detail="Missing RESEND_WEBHOOK_SECRET")
+    
+    if not signature:
+        logging.warning("[RESEND WEBHOOK] Missing X-Resend-Signature header")
+        raise HTTPException(status_code=400, detail="Missing X-Resend-Signature header")
+
+    # 2) Compute HMAC hex digest and compare in constant time
+    computed = hmac.new(secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(computed, signature):
+        logging.warning("[RESEND WEBHOOK] Invalid signature")
+        raise HTTPException(status_code=403, detail="Invalid webhook signature")
+
+    # 3) Parse JSON after signature passes
     try:
-        # TODO: Add signature verification here before processing
-        # webhook_secret = os.getenv("RESEND_WEBHOOK_SECRET")
-        # signature = request.headers.get("X-Resend-Signature")
-        # if not verify_signature(body, signature, webhook_secret):
-        #     raise HTTPException(status_code=401, detail="Invalid webhook signature")
-        
-        body = await request.json()
-        
-        # Extract event data
-        event_type = body.get("type", "unknown")
-        
-        # Resend webhook formats vary, try multiple paths for email
-        email = body.get("to") or body.get("email") or body.get("data", {}).get("to") or "unknown"
-        if isinstance(email, list):
-            email = email[0] if email else "unknown"
-        
-        provider_id = body.get("id") or body.get("data", {}).get("email_id")
-        subject = body.get("subject") or body.get("data", {}).get("subject")
-        
-        # Store event in database (PostgreSQL auto-converts string to jsonb)
-        payload_json = json.dumps(body)
+        payload = json.loads(raw_body.decode("utf-8"))
+    except Exception as e:
+        logging.error(f"[RESEND WEBHOOK] Invalid JSON: {str(e)}")
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    # 4) Normalize fields (Resend payload fields may vary slightly by event)
+    event_type = payload.get("type") or "unknown"
+    provider_id = payload.get("id") or (payload.get("data") or {}).get("id")
+    
+    # Resend webhook formats vary, try multiple paths for email
+    email = (
+        payload.get("to")
+        or payload.get("email")
+        or (payload.get("data") or {}).get("to")
+        or "unknown"
+    )
+    if isinstance(email, list):
+        email = email[0] if email else "unknown"
+    
+    subject = payload.get("subject") or (payload.get("data") or {}).get("subject")
+
+    # Safety: we rely on provider_id to deduplicate
+    if not provider_id:
+        # If Resend ever omits id, synthesize a hash to prevent dupes
+        provider_id = hashlib.sha256(raw_body).hexdigest()
+        logging.info(f"[RESEND WEBHOOK] Generated synthetic provider_id from payload hash")
+
+    # 5) Store to DB (idempotent on provider_id via unique index)
+    try:
         db.execute(text("""
             INSERT INTO email_events(email, event_type, provider_id, subject, payload)
             VALUES (:email, :event_type, :provider_id, :subject, :payload)
+            ON CONFLICT (provider_id) DO NOTHING
         """), {
             "email": email,
             "event_type": event_type,
             "provider_id": provider_id,
             "subject": subject,
-            "payload": payload_json
+            "payload": json.dumps(payload)
         })
         db.commit()
-        
-        logging.info(f"[RESEND WEBHOOK] Stored {event_type} event for {email}")
-        
-        return {"ok": True}
-        
+        logging.info(f"[RESEND WEBHOOK] Stored {event_type} event for {email} (provider_id: {provider_id})")
     except Exception as e:
-        logging.error(f"[RESEND WEBHOOK] Error: {str(e)}")
-        return {"ok": False, "error": str(e)}
+        # Log but still 200 to acknowledge receipt (to avoid retry storms)
+        logging.error(f"[RESEND WEBHOOK][DB ERROR] {str(e)}")
+
+    # 6) Always return 200 quickly so Resend doesn't retry aggressively
+    return {"ok": True}
+
+@app.get("/v1/webhooks/resend/check", dependencies=[Depends(require_api_key)])
+def resend_webhook_check():
+    """Verify webhook secret is configured (for staging/testing)."""
+    has_secret = bool(os.getenv("RESEND_WEBHOOK_SECRET"))
+    return {"webhook_secret_present": has_secret}
 
 @app.get("/v1/email-events/summary", dependencies=[Depends(require_api_key)])
 def email_events_summary(db: Session = Depends(get_db)):

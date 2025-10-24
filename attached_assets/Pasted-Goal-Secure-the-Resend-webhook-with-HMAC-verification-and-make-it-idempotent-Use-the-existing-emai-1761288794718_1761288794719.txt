@@ -1,0 +1,151 @@
+Goal: Secure the Resend webhook with HMAC verification and make it idempotent. Use the existing email_events table.
+
+Do the following changes:
+
+Dependencies & imports
+
+In main.py (or the router file with /v1/webhooks/resend), add:
+
+import os, hmac, hashlib, json
+from fastapi import Request, HTTPException
+from sqlalchemy import text
+from db import async_session_maker
+
+
+DB idempotency (one-time migration)
+
+Ensure we don’t store duplicates if Resend retries. Create a unique index on provider_id:
+
+# run once at startup or via a small init block
+async with async_session_maker() as s:
+    await s.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS email_events_provider_unique ON email_events(provider_id)"))
+    await s.commit()
+
+
+If there’s already a startup hook, add it there; otherwise, put this in a safe init path that runs once.
+
+Replace the existing /v1/webhooks/resend with HMAC verification + idempotent insert
+
+Replace (or create) this exact endpoint:
+
+@router.post("/v1/webhooks/resend")
+async def resend_webhook(request: Request):
+    """
+    Secure webhook endpoint for Resend email events.
+    Verifies HMAC-SHA256 signature sent in X-Resend-Signature,
+    stores event in email_events (idempotent on provider_id),
+    and returns 200 quickly.
+    """
+    # 1) Read raw body and signature
+    raw_body: bytes = await request.body()
+    signature = request.headers.get("X-Resend-Signature")
+    secret = os.getenv("RESEND_WEBHOOK_SECRET")
+
+    if not secret:
+        # Misconfiguration safeguard
+        raise HTTPException(status_code=500, detail="Missing RESEND_WEBHOOK_SECRET")
+    if not signature:
+        raise HTTPException(status_code=400, detail="Missing X-Resend-Signature header")
+
+    # 2) Compute HMAC hex digest and compare in constant time
+    computed = hmac.new(secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(computed, signature):
+        raise HTTPException(status_code=403, detail="Invalid webhook signature")
+
+    # 3) Parse JSON after signature passes
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    # 4) Normalize fields (Resend payload fields may vary slightly by event)
+    event_type = payload.get("type") or "unknown"
+    provider_id = payload.get("id") or (payload.get("data") or {}).get("id")  # fallback if nested
+    email = (
+        payload.get("to")
+        or payload.get("email")
+        or (payload.get("data") or {}).get("to")
+        or "unknown"
+    )
+    subject = payload.get("subject") or (payload.get("data") or {}).get("subject")
+
+    # Safety: we rely on provider_id to deduplicate
+    if not provider_id:
+        # If Resend ever omits id, synthesize a hash to prevent dupes
+        provider_id = hashlib.sha256(raw_body).hexdigest()
+
+    # 5) Store to DB (idempotent on provider_id)
+    async with async_session_maker() as s:
+        try:
+            await s.execute(
+                text("""
+                    INSERT INTO email_events(email, event_type, provider_id, subject, payload)
+                    VALUES (:email, :event_type, :provider_id, :subject, :payload::jsonb)
+                    ON CONFLICT (provider_id) DO NOTHING
+                """),
+                {
+                    "email": email,
+                    "event_type": event_type,
+                    "provider_id": provider_id,
+                    "subject": subject,
+                    "payload": json.dumps(payload),
+                },
+            )
+            await s.commit()
+        except Exception as e:
+            # Log but still 200 to acknowledge receipt (to avoid retries storms)
+            print("[RESEND WEBHOOK][DB ERROR]", str(e))
+
+    # 6) Always return 200 quickly so Resend doesn’t retry aggressively
+    return {"ok": True}
+
+
+Add a tiny self-check route (optional, Bearer-protected)
+
+Helpful for quick verification in staging:
+
+@router.get("/v1/webhooks/resend/check", dependencies=[Depends(require_api_key)])
+async def resend_webhook_check():
+    has_secret = bool(os.getenv("RESEND_WEBHOOK_SECRET"))
+    return {"webhook_secret_present": has_secret}
+
+
+Docs & comments
+
+In replit.md, add a short section:
+
+Webhook URL: POST /v1/webhooks/resend
+
+Secret: RESEND_WEBHOOK_SECRET (set in Deployment)
+
+Header verified: X-Resend-Signature (HMAC-SHA256 over raw body)
+
+Idempotency: unique index on provider_id, ON CONFLICT DO NOTHING
+
+Re-deploy so the new secret is loaded and code is active.
+
+After deploy — quick tests (run in Shell or local):
+
+# 1) Secret presence
+curl -s -H "Authorization: Bearer $FASTAPI_SECRET_KEY" \
+  https://api.livinglytics.com/v1/webhooks/resend/check
+
+# 2) Send a signed sample (simulate locally only if you wish).
+# Normally you’ll use Resend’s “Send test event” button.
+
+
+Acceptance criteria:
+
+Sending a “Test event” from the Resend Webhooks page results in:
+
+HTTP 200 from our endpoint (visible in Resend)
+
+A new row in email_events (unless same provider_id already stored)
+
+Invalid signature → 403.
+
+Missing signature → 400.
+
+email_events_provider_unique index exists.
+
+If any part already exists, update/replace as needed—don’t duplicate.
