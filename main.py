@@ -687,6 +687,19 @@ def metrics_timeline(user_email: str, days: int = 7, db: Session = Depends(get_d
     end_date = date.today()
     start_date = end_date - timedelta(days=days - 1)
     
+    # Initialize timeline with all dates in range (with zeros)
+    timeline = {}
+    current_date = start_date
+    while current_date <= end_date:
+        timeline[current_date.isoformat()] = {
+            "date": current_date.isoformat(),
+            "sessions": 0,
+            "conversions": 0,
+            "reach": 0,
+            "engagement": 0
+        }
+        current_date += timedelta(days=1)
+    
     # Query metrics grouped by date (ensuring no cross-tenant data)
     results = db.execute(
         select(
@@ -701,19 +714,9 @@ def metrics_timeline(user_email: str, days: int = 7, db: Session = Depends(get_d
         .order_by(Metric.metric_date)
     ).all()
     
-    # Build timeline structure
-    timeline = {}
+    # Fill in actual data
     for metric_date, metric_name, total in results:
         date_str = metric_date.isoformat()
-        if date_str not in timeline:
-            timeline[date_str] = {
-                "date": date_str,
-                "sessions": 0,
-                "conversions": 0,
-                "reach": 0,
-                "engagement": 0
-            }
-        
         # Map metric names (sessions, conversions, reach, engagement)
         if metric_name in timeline[date_str]:
             timeline[date_str][metric_name] = int(total) if total else 0
