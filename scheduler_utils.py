@@ -275,8 +275,8 @@ def send_weekly_digest(user_id: str, db: Session) -> Dict[str, Any]:
         return {"status": "error", "message": "User not found"}
     
     if not user.opt_in_digest:
-        logging.info(f"[DIGEST] User {user.email} has opted out, skipping")
-        return {"status": "skipped", "message": "User opted out"}
+        logging.info(f"[DIGEST] user_id={user.id} email={user.email} opted out, skipping")
+        return {"status": "skipped", "message": "User opted out", "user_id": str(user.id)}
     
     # 2. Compute period
     period_start, period_end = get_last_completed_week()
@@ -291,8 +291,8 @@ def send_weekly_digest(user_id: str, db: Session) -> Dict[str, Any]:
     ).scalar_one_or_none()
     
     if existing:
-        logging.info(f"[DIGEST] Already sent to {user.email} for {period_start} - {period_end}")
-        return {"status": "skipped", "message": "Already sent for this period"}
+        logging.info(f"[DIGEST] user_id={user.id} email={user.email} period={period_start} to {period_end} already sent")
+        return {"status": "skipped", "message": "Already sent for this period", "user_id": str(user.id)}
     
     try:
         # 4. Query metrics
@@ -320,10 +320,11 @@ def send_weekly_digest(user_id: str, db: Session) -> Dict[str, Any]:
         
         db.commit()
         
-        logging.info(f"[DIGEST] Sent to {user.email} for {period_start} - {period_end}")
+        logging.info(f"[DIGEST] ✅ user_id={user.id} email={user.email} period={period_start} to {period_end} status=sent")
         return {
             "status": "sent",
             "message": "Digest sent successfully",
+            "user_id": str(user.id),
             "user_email": user.email,
             "period_start": period_start.isoformat(),
             "period_end": period_end.isoformat()
@@ -331,7 +332,7 @@ def send_weekly_digest(user_id: str, db: Session) -> Dict[str, Any]:
         
     except Exception as e:
         # Log error
-        logging.error(f"[DIGEST] Error sending to {user.email}: {str(e)}")
+        logging.error(f"[DIGEST] ❌ user_id={user.id} email={user.email} period={period_start} to {period_end} status=error error={str(e)}")
         digest_log = DigestLog(
             user_id=user_id,
             period_start=period_start,
@@ -345,7 +346,10 @@ def send_weekly_digest(user_id: str, db: Session) -> Dict[str, Any]:
         return {
             "status": "error",
             "message": str(e),
-            "user_email": user.email
+            "user_id": str(user.id),
+            "user_email": user.email,
+            "period_start": period_start.isoformat(),
+            "period_end": period_end.isoformat()
         }
 
 def run_weekly_digests(db: Session) -> Dict[str, Any]:

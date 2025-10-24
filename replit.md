@@ -6,10 +6,13 @@ Living Lytics API is a backend service built with FastAPI, designed as an analyt
 ## User Preferences
 - Using Supabase for PostgreSQL database (not Replit DB)
 - **Direct connection preferred** over connection pooler (port 5432 vs 6543) to avoid pgBouncer prepared statement conflicts
-- Bearer token authentication for API security
+- Bearer token authentication for API security (FASTAPI_SECRET_KEY)
+- **Admin endpoints protected** with separate ADMIN_TOKEN for sensitive operations
 - Idempotent schema management approach
 - GitHub integration via Replit connector for automatic OAuth management
 - Public-only data exposure for GitHub endpoints (private repos filtered)
+- **Structured logging** with user_id, period, and status for digest operations
+- **Cache-Control headers** on timeline endpoint (5 minutes) for performance
 - INFO-level logging for production visibility (including weekly digest tracking)
 
 ## System Architecture
@@ -43,18 +46,26 @@ The API provides several categories of endpoints:
     - `GET /v1/github/repos`: Lists public repositories for the authenticated user.
 - **Email Digests** (Resend integration with rate limiting and retry):
     - `POST /v1/digest/run`: Send digest to a specific user. Body: `{user_email, days}`. Resolves email to account_id (strict match), queries metrics for that account only, sends personalized digest. Returns `{sent, user_email, period_start, period_end, days}`.
-    - `POST /v1/digest/run-all`: Admin endpoint to send digest to all users. Body: `{days}`. Iterates all users with 0.5s throttling to avoid provider limits.
+    - `POST /v1/digest/scheduled-run-all`: **Admin endpoint** (requires ADMIN_TOKEN) to manually trigger weekly digest for all opted-in users. Hidden from schema. Uses scheduler logic with idempotent tracking.
     - `POST /v1/digest/weekly`: Legacy weekly digest endpoint. Supports `scope: "email"` for single user or `scope: "all"` for all users. Includes rate limiting (10-minute cooldown) and automatic retry with exponential backoff (3 attempts: 0.5s, 1s, 2s).
     - `GET /v1/digest/preview`: Returns HTML preview of digest email for visual QA (no email sent).
     - `POST /v1/digest/test`: Sends test digest email to specified address for integration verification.
     - `GET /v1/digest/status`: Returns status of the last digest run (started_at, finished_at, sent count, error count).
+    - `GET /v1/digest/schedule`: View APScheduler status and next run time (Monday 07:00 PT).
+    - `GET /v1/digest/preferences`: Get user's opt-in status for weekly digests.
+    - `PUT /v1/digest/preferences`: Update user's opt-in preference.
+    - `GET /v1/digest/unsubscribe`: JWT-based unsubscribe from email links (1-year token validity).
 - **Webhooks** (no auth required):
     - `POST /v1/webhooks/resend`: Receives webhook events from Resend (delivered, bounced, complained, opened, clicked). Stores events in email_events table for monitoring.
 - **Email Events Monitoring**:
     - `GET /v1/email-events/summary`: Returns summary of email events from last 24 hours with breakdown by type and latest 10 events.
+- **Metrics Analytics**:
+    - `GET /v1/metrics/timeline`: Returns daily metrics timeline for a user (params: user_email, days). **Cached for 5 minutes** with `Cache-Control: max-age=300` header. Returns array of `{date, sessions, conversions, reach, engagement}`. Enforces strict user isolation (no cross-tenant data).
 
 ### Authentication
-All protected API endpoints require Bearer token authentication using a `FASTAPI_SECRET_KEY`.
+- **Standard endpoints**: Bearer token authentication using `FASTAPI_SECRET_KEY`
+- **Admin endpoints**: Separate Bearer token authentication using `ADMIN_TOKEN` (required for `/v1/digest/scheduled-run-all` and other admin operations)
+- Admin endpoints are hidden from OpenAPI schema (`include_in_schema=False`) to prevent discovery
 
 ### Configuration
 The application is configured to run on `0.0.0.0` at port `5000`. **CORS is locked down** to Base44 domains: `livinglytics.base44.app`, `livinglytics.com`, and `localhost:5173` (for local development). Only GET, POST, and OPTIONS methods are allowed with Authorization and Content-Type headers. Environment variables manage database connection strings (DATABASE_URL for direct connection on port 5432, with automatic fallback to connection pooler on port 6543 for IPv6 issues), Supabase keys, and the FastAPI secret key. Logging is configured at INFO level for production visibility, including [WEEKLY DIGEST], [DIGEST RUN], [DIGEST RUN-ALL], [METRICS TIMELINE], [DIGEST PREVIEW], [DIGEST TEST], [RESEND WEBHOOK], and [RESEND] retry logging.
@@ -73,7 +84,9 @@ The application is configured to run on `0.0.0.0` at port `5000`. **CORS is lock
 ## Production Deployment Notes
 - Use DATABASE_URL with direct connection string (port 5432) in deployment secrets
 - CORS is locked to Base44 domains: `livinglytics.base44.app`, `livinglytics.com`, and `localhost:5173` (hardcoded for security)
-- **Required Resend Environment Variables**:
+- **Required Environment Variables**:
+  - `FASTAPI_SECRET_KEY`: API key for standard endpoint authentication
+  - `ADMIN_TOKEN`: **Required for admin endpoints** (manual digest triggers, sensitive operations)
   - `RESEND_API_KEY`: API key from Resend dashboard
   - `MAIL_FROM`: Verified sender email address (e.g., noreply@livinglytics.com)
   - `MAIL_FROM_NAME`: Display name for emails (default: "Living Lytics")
@@ -86,9 +99,11 @@ The application is configured to run on `0.0.0.0` at port `5000`. **CORS is lock
   - **Security**: HMAC signature verification protects against spoofed webhook requests
   - **Verification endpoint**: `GET /v1/webhooks/resend/check` (Bearer-protected) to verify secret is configured
   - Monitor email delivery via `/v1/email-events/summary` endpoint
-- Weekly digest endpoint designed for Base44 scheduled functions (Mondays 08:00 AM PT)
+- **APScheduler**: Automatic weekly digest system runs Mondays 07:00 AM PT (America/Los_Angeles timezone)
 - **Rate Limiting**: Digest runs are limited to one every 10 minutes to prevent duplicate sends
 - **Retry Logic**: Email sending retries up to 3 times with exponential backoff (0.5s, 1s, 2s) on rate limits (429) or server errors (5xx)
-- Monitor logs for [WEEKLY DIGEST], [RESEND WEBHOOK], and [RESEND] entries
+- **Structured Logging**: All digest operations log `user_id`, `period_start`, `period_end`, and `status` for observability
+- Monitor logs for [SCHEDULER], [DIGEST], [ADMIN], [RESEND WEBHOOK], and [RESEND] entries
 - Email digests include KPI metrics (sessions, conversions, reach, engagement) with automatic insights and action items
 - Use `/v1/digest/status` to check last digest run status before triggering new runs
+- **Production Sanity Check**: Run `./scripts/prod_check.sh https://api.livinglytics.com $FASTAPI_SECRET_KEY demo@livinglytics.app` to verify health, scheduler, and timeline endpoints

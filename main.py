@@ -7,9 +7,9 @@ import hashlib
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import Dict, Any, Optional, List
-from fastapi import FastAPI, Depends, HTTPException, Header, Body, Request
+from fastapi import FastAPI, Depends, HTTPException, Header, Body, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field, EmailStr
 from sqlalchemy import select, func, text
 from sqlalchemy.orm import Session
@@ -32,8 +32,12 @@ logging.basicConfig(level=logging.INFO)
 
 APP_NAME = os.getenv("APP_NAME", "Living Lytics API")
 API_KEY = os.getenv("FASTAPI_SECRET_KEY")
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN")
+
 if not API_KEY:
     raise RuntimeError("FASTAPI_SECRET_KEY not set")
+if not ADMIN_TOKEN:
+    logging.warning("⚠️  ADMIN_TOKEN not set - admin endpoints will be inaccessible")
 
 app = FastAPI(title=APP_NAME)
 
@@ -111,6 +115,17 @@ def require_api_key(authorization: str = Header(None)):
     token = authorization.split(" ", 1)[1]
     if token != API_KEY:
         raise HTTPException(status_code=403, detail="Invalid token")
+
+def require_admin_token(authorization: str = Header(None)):
+    """Require admin token for sensitive operations."""
+    if not ADMIN_TOKEN:
+        raise HTTPException(status_code=503, detail="Admin operations unavailable - ADMIN_TOKEN not configured")
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing bearer token")
+    token = authorization.split(" ", 1)[1]
+    if token != ADMIN_TOKEN:
+        raise HTTPException(status_code=403, detail="Forbidden - admin access required")
+    return True
 
 def get_github_access_token():
     """Fetch GitHub access token from Replit connector service."""
@@ -665,14 +680,16 @@ def digest_run(payload: DigestRunRequest, db: Session = Depends(get_db)):
         logging.error(f"[DIGEST RUN] Failed to send email to {payload.user_email}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to send digest: {str(e)}")
 
-@app.post("/v1/digest/scheduled-run-all", dependencies=[Depends(require_api_key)])
+@app.post("/v1/digest/scheduled-run-all", dependencies=[Depends(require_admin_token)], include_in_schema=False)
 def scheduled_run_all_digests(db: Session = Depends(get_db)):
     """
     Admin endpoint: Run weekly digest for all opted-in users.
     Uses scheduler logic with idempotency via digest_log.
+    Requires ADMIN_TOKEN for access.
     """
     logging.info("[ADMIN] Manual trigger of weekly digest run")
     result = run_weekly_digests(db)
+    logging.info(f"[ADMIN] Weekly digest run completed: {result}")
     return result
 
 @app.get("/v1/digest/schedule", dependencies=[Depends(require_api_key)])
@@ -815,7 +832,7 @@ def unsubscribe_from_digest(token: str, db: Session = Depends(get_db)):
             <div style="max-width: 500px; margin: 50px auto; background: white; border-radius: 8px; padding: 40px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); text-align: center;">
                 <div style="font-size: 48px; margin-bottom: 20px;">✅</div>
                 <h1 style="color: #333; margin: 0 0 10px 0;">You're Unsubscribed</h1>
-                <p style="color: #666; margin: 0 0 20px 0;">You will no longer receive weekly digest emails at <strong>{user.email}</strong>.</p>
+                <p style="color: #666; margin: 0 0 20px 0;">You will no longer receive weekly digest emails at <strong>{result[0]}</strong>.</p>
                 <p style="color: #999; font-size: 14px;">You can re-subscribe anytime from your account settings.</p>
             </div>
         </body>
@@ -825,7 +842,7 @@ def unsubscribe_from_digest(token: str, db: Session = Depends(get_db)):
 # Metrics Timeline Endpoint
 @app.get("/v1/metrics/timeline", dependencies=[Depends(require_api_key)])
 def metrics_timeline(user_email: str, days: int = 7, db: Session = Depends(get_db)):
-    """Get daily metrics timeline for a user (last N days)."""
+    """Get daily metrics timeline for a user (last N days). Cached for 5 minutes."""
     logging.info(f"[METRICS TIMELINE] user_email={user_email}, days={days}")
     
     # Resolve email to account_id (strict match)
@@ -874,9 +891,13 @@ def metrics_timeline(user_email: str, days: int = 7, db: Session = Depends(get_d
     # Convert to sorted list
     timeline_list = sorted(timeline.values(), key=lambda x: x["date"])
     
-    logging.info(f"[METRICS TIMELINE] Returning {len(timeline_list)} days of data")
+    logging.info(f"[METRICS TIMELINE] Returning {len(timeline_list)} days of data for user {user.id}")
     
-    return timeline_list
+    # Return with cache control header
+    return JSONResponse(
+        content=timeline_list,
+        headers={"Cache-Control": "max-age=300"}  # Cache for 5 minutes
+    )
 
 # Webhook and Email Events Endpoints
 
