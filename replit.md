@@ -10,6 +10,8 @@ Living Lytics API is a production-ready analytics engine and data integration pl
 - **Admin endpoints protected** with separate ADMIN_TOKEN for sensitive operations
 - Idempotent schema management approach
 - GitHub integration via Replit connector for automatic OAuth management
+- **Google OAuth integration** for GA4 analytics with automatic 30-day backfill
+- **Instagram OAuth integration** for reach/engagement metrics with automatic 30-day backfill
 - Public-only data exposure for GitHub endpoints (private repos filtered)
 - **Structured logging** with user_id, period, and status for digest operations
 - **Cache-Control headers** on timeline endpoint (5 minutes) for performance
@@ -30,6 +32,8 @@ The API provides endpoints for:
 - **GitHub Integration**: Authenticated user and public repository information.
 - **Google OAuth / GA4 Integration**: OAuth flow initiation and callback, connection status, listing GA4 properties, and saving selected GA4 properties.
 - **GA4 Data Sync**: Auto-backfill (30 days) on first property save. Admin-protected endpoint to manually trigger GA4 data synchronization.
+- **Instagram OAuth Integration**: OAuth flow initiation and callback with automatic long-lived token exchange (60 days).
+- **Instagram Data Sync**: Auto-backfill (30 days) on first connection for reach and engagement metrics. Admin-protected endpoint for manual sync.
 - **Email Digests**: Sending personalized weekly digests to users, admin-triggered scheduled runs, previewing digests, testing, status monitoring, scheduling info, and unsubscribe functionality.
 - **Webhooks**: Resend webhook event reception for email delivery monitoring.
 - **Email Events Monitoring**: Summaries and delivery health KPIs (open, click, bounce rates).

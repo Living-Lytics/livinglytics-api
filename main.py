@@ -59,10 +59,17 @@ APP_NAME = os.getenv("APP_NAME", "Living Lytics API")
 API_KEY = os.getenv("FASTAPI_SECRET_KEY")
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN")
 
+# Instagram OAuth configuration
+INSTAGRAM_APP_ID = os.getenv("INSTAGRAM_APP_ID")
+INSTAGRAM_APP_SECRET = os.getenv("INSTAGRAM_APP_SECRET")
+INSTAGRAM_REDIRECT_URI = os.getenv("INSTAGRAM_REDIRECT_URI")
+
 if not API_KEY:
     raise RuntimeError("FASTAPI_SECRET_KEY not set")
 if not ADMIN_TOKEN:
     logging.warning("⚠️  ADMIN_TOKEN not set - admin endpoints will be inaccessible")
+if not INSTAGRAM_APP_ID or not INSTAGRAM_APP_SECRET:
+    logging.warning("⚠️  Instagram OAuth not configured - Instagram integration will be unavailable")
 
 app = FastAPI(title=APP_NAME)
 
@@ -1881,6 +1888,413 @@ def refresh_google_token(data_source: DataSource, db: Session) -> str:
     
     return new_access_token
 
+# ============================================================
+# Instagram OAuth & Sync
+# ============================================================
+
+@app.get("/v1/connections/instagram/init")
+def instagram_oauth_init(email: str, db: Session = Depends(get_db)):
+    """
+    Initiate Instagram OAuth flow.
+    Redirects user to Instagram authorization with CSRF protection.
+    """
+    if not INSTAGRAM_APP_ID or not INSTAGRAM_REDIRECT_URI:
+        raise HTTPException(status_code=500, detail="Instagram OAuth not configured")
+    
+    # Verify user exists
+    user_result = db.execute(
+        select(User).where(User.email == email)
+    ).scalar_one_or_none()
+    
+    if not user_result:
+        raise HTTPException(status_code=404, detail=f"User not found: {email}")
+    
+    # Generate secure state token
+    state_token = generate_oauth_state(email)
+    
+    # Build Instagram OAuth URL
+    oauth_params = {
+        "client_id": INSTAGRAM_APP_ID,
+        "redirect_uri": INSTAGRAM_REDIRECT_URI,
+        "scope": "user_profile,user_media,instagram_basic,instagram_manage_insights",
+        "response_type": "code",
+        "state": state_token
+    }
+    
+    auth_url = f"https://api.instagram.com/oauth/authorize?{urlencode(oauth_params)}"
+    
+    logging.info(f"[OAUTH] Initiating Instagram OAuth for user={email}")
+    
+    return RedirectResponse(url=auth_url)
+
+@app.get("/v1/connections/instagram/callback")
+def instagram_oauth_callback(code: str, state: str, db: Session = Depends(get_db)):
+    """
+    Handle Instagram OAuth callback with CSRF protection.
+    Exchanges short-lived code for long-lived token and triggers 30-day backfill.
+    """
+    if not INSTAGRAM_APP_ID or not INSTAGRAM_APP_SECRET or not INSTAGRAM_REDIRECT_URI:
+        raise HTTPException(status_code=500, detail="Instagram OAuth not configured")
+    
+    # Verify state token (CSRF protection)
+    email = verify_oauth_state(state)
+    if not email:
+        logging.error(f"[OAUTH] Invalid or expired Instagram state token")
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid or expired OAuth state. Please restart the connection flow."
+        )
+    
+    # Verify user exists
+    user_result = db.execute(
+        select(User).where(User.email == email)
+    ).scalar_one_or_none()
+    
+    if not user_result:
+        logging.error(f"[OAUTH] User not found during Instagram callback: {email}")
+        raise HTTPException(status_code=404, detail=f"User not found: {email}")
+    
+    # Exchange code for short-lived token
+    token_url = "https://api.instagram.com/oauth/access_token"
+    token_data = {
+        "client_id": INSTAGRAM_APP_ID,
+        "client_secret": INSTAGRAM_APP_SECRET,
+        "grant_type": "authorization_code",
+        "redirect_uri": INSTAGRAM_REDIRECT_URI,
+        "code": code
+    }
+    
+    try:
+        token_response = requests.post(token_url, data=token_data, timeout=10)
+        token_response.raise_for_status()
+        short_lived_data = token_response.json()
+    except requests.RequestException as e:
+        logging.error(f"[OAUTH] Instagram token exchange failed for user={email}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to exchange code for tokens: {str(e)}")
+    
+    short_lived_token = short_lived_data.get("access_token")
+    ig_user_id = short_lived_data.get("user_id")
+    
+    if not short_lived_token or not ig_user_id:
+        raise HTTPException(status_code=500, detail="No access token or user_id received from Instagram")
+    
+    # Exchange short-lived token for long-lived token (60 days)
+    long_lived_url = "https://graph.instagram.com/access_token"
+    long_lived_params = {
+        "grant_type": "ig_exchange_token",
+        "client_secret": INSTAGRAM_APP_SECRET,
+        "access_token": short_lived_token
+    }
+    
+    try:
+        long_lived_response = requests.get(long_lived_url, params=long_lived_params, timeout=10)
+        long_lived_response.raise_for_status()
+        long_lived_data = long_lived_response.json()
+    except requests.RequestException as e:
+        logging.error(f"[OAUTH] Instagram long-lived token exchange failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get long-lived token")
+    
+    access_token = long_lived_data.get("access_token")
+    expires_in = long_lived_data.get("expires_in", 5184000)  # 60 days default
+    
+    if not access_token:
+        raise HTTPException(status_code=500, detail="No long-lived access token received")
+    
+    # Calculate expiration timestamp
+    expires_at = datetime.now() + timedelta(seconds=expires_in)
+    
+    # Get Instagram username
+    username = None
+    try:
+        user_info_url = f"https://graph.instagram.com/me?fields=username&access_token={access_token}"
+        user_info_response = requests.get(user_info_url, timeout=10)
+        user_info_response.raise_for_status()
+        user_info = user_info_response.json()
+        username = user_info.get("username", ig_user_id)
+    except Exception as e:
+        logging.warning(f"[OAUTH] Failed to fetch Instagram username: {e}")
+        username = ig_user_id
+    
+    # Check for existing Instagram metrics BEFORE creating/updating data source
+    existing_metrics_count = db.execute(
+        select(func.count(Metric.id)).where(
+            Metric.user_id == user_result.id,
+            Metric.source_name == "instagram"
+        )
+    ).scalar()
+    
+    is_first_connection = (existing_metrics_count == 0)
+    
+    # Check if data source already exists
+    existing = db.execute(
+        select(DataSource).where(
+            DataSource.user_id == user_result.id,
+            DataSource.source_name == "instagram"
+        )
+    ).scalar_one_or_none()
+    
+    if existing:
+        # Update existing
+        existing.access_token = access_token
+        existing.refresh_token = ig_user_id  # Store IG user ID in refresh_token field
+        existing.expires_at = expires_at
+        existing.account_ref = username
+        existing.updated_at = datetime.now()
+        logging.info(f"[OAUTH] Instagram connection updated for user={email}, ig_user_id={ig_user_id}")
+    else:
+        # Create new
+        new_source = DataSource(
+            user_id=user_result.id,
+            source_name="instagram",
+            account_ref=username,
+            access_token=access_token,
+            refresh_token=ig_user_id,  # Store IG user ID
+            expires_at=expires_at
+        )
+        db.add(new_source)
+        logging.info(f"[OAUTH] Instagram connected for user={email}, ig_user_id={ig_user_id}")
+    
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        logging.error(f"[OAUTH] Failed to save Instagram tokens for user={email}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to save OAuth tokens")
+    
+    # Trigger 30-day backfill if this is first connection
+    backfill_started = False
+    
+    if is_first_connection:
+        # No prior Instagram data - trigger 30-day backfill
+        logging.info(f"[SYNC] Running initial 30-day IG backfill for user={email}")
+        try:
+            backfill_result = run_instagram_sync_internal(user_result, db, days=30)
+            if backfill_result.get("status") == "success":
+                backfill_started = True
+                logging.info(f"[SYNC] IG backfill complete: {backfill_result.get('metrics_inserted', 0)} metrics inserted")
+        except Exception as e:
+            logging.error(f"[SYNC] IG backfill failed for user={email}: {e}")
+    else:
+        logging.info(f"[SYNC] IG backfill skipped for user={email} (existing_metrics_count={existing_metrics_count})")
+    
+    return {
+        "connected": True,
+        "provider": "instagram",
+        "username": username,
+        "ig_user_id": ig_user_id,
+        "expires_at": expires_at.isoformat(),
+        "backfill_started": backfill_started
+    }
+
+def refresh_instagram_token(data_source: DataSource, db: Session) -> str:
+    """
+    Refresh Instagram long-lived token if expiring within 7 days.
+    Returns valid access token.
+    """
+    if not INSTAGRAM_APP_SECRET:
+        raise HTTPException(status_code=500, detail="Instagram OAuth not configured")
+    
+    # Check if token expires within 7 days
+    now = datetime.now()
+    if data_source.expires_at and data_source.expires_at > now + timedelta(days=7):
+        # Token still valid
+        return data_source.access_token
+    
+    logging.info(f"[OAUTH] Refreshing Instagram token for user_id={data_source.user_id}")
+    
+    # Refresh long-lived token (extends by 60 days)
+    refresh_url = "https://graph.instagram.com/refresh_access_token"
+    params = {
+        "grant_type": "ig_refresh_token",
+        "access_token": data_source.access_token
+    }
+    
+    try:
+        response = requests.get(refresh_url, params=params, timeout=10)
+        response.raise_for_status()
+        tokens = response.json()
+    except requests.RequestException as e:
+        logging.error(f"[OAUTH] Instagram token refresh failed: {e}")
+        raise HTTPException(
+            status_code=401,
+            detail="Failed to refresh Instagram token. Please reconnect your account."
+        )
+    
+    new_access_token = tokens.get("access_token")
+    expires_in = tokens.get("expires_in", 5184000)
+    
+    if not new_access_token:
+        raise HTTPException(status_code=500, detail="No access token in refresh response")
+    
+    # Update data source
+    data_source.access_token = new_access_token
+    data_source.expires_at = now + timedelta(seconds=expires_in)
+    data_source.updated_at = now
+    
+    db.commit()
+    
+    logging.info(f"[OAUTH] Instagram token refreshed successfully for user_id={data_source.user_id}")
+    
+    return new_access_token
+
+def run_instagram_sync_internal(user: User, db: Session, days: int = 30) -> dict:
+    """
+    Internal function to sync Instagram metrics for a user.
+    
+    Args:
+        user: User object
+        db: Database session
+        days: Number of days to sync (30 for backfill, 1 for daily)
+    
+    Returns:
+        dict with status, metrics_inserted, and date_range
+    """
+    # Get Instagram data source
+    data_source = db.execute(
+        select(DataSource).where(
+            DataSource.user_id == user.id,
+            DataSource.source_name == "instagram"
+        )
+    ).scalar_one_or_none()
+    
+    if not data_source:
+        logging.error(f"[SYNC] No Instagram connection for user={user.email}")
+        raise HTTPException(
+            status_code=404,
+            detail="Instagram account not connected"
+        )
+    
+    # Refresh token if needed
+    access_token = refresh_instagram_token(data_source, db)
+    ig_user_id = data_source.refresh_token  # IG user ID stored in refresh_token field
+    
+    # Calculate date range (inclusive)
+    end_date = (datetime.now() - timedelta(days=1)).date()
+    start_date = end_date - timedelta(days=days-1)
+    
+    logging.info(f"[SYNC] Starting Instagram sync for user={user.email}, ig_user_id={ig_user_id}, range={start_date} to {end_date}, days={days}")
+    
+    metrics_inserted = 0
+    
+    # Fetch metrics for each day
+    current_date = start_date
+    while current_date <= end_date:
+        try:
+            # Convert date to Unix timestamps
+            day_start = int(datetime.combine(current_date, datetime.min.time()).timestamp())
+            day_end = int(datetime.combine(current_date, datetime.max.time()).timestamp())
+            
+            # Fetch daily insights (reach, impressions, profile_views)
+            insights_url = f"https://graph.instagram.com/v19.0/{ig_user_id}/insights"
+            insights_params = {
+                "metric": "reach,impressions,profile_views",
+                "period": "day",
+                "since": day_start,
+                "until": day_end,
+                "access_token": access_token
+            }
+            
+            reach = 0
+            try:
+                insights_response = requests.get(insights_url, params=insights_params, timeout=15)
+                insights_response.raise_for_status()
+                insights_data = insights_response.json()
+                
+                for metric in insights_data.get("data", []):
+                    metric_name = metric.get("name")
+                    values = metric.get("values", [])
+                    if values and len(values) > 0:
+                        value = values[0].get("value", 0)
+                        if metric_name == "reach":
+                            reach = value
+            except Exception as e:
+                logging.warning(f"[SYNC] Failed to fetch Instagram insights for {current_date}: {e}")
+            
+            # Fetch media for engagement
+            media_url = f"https://graph.instagram.com/v19.0/{ig_user_id}/media"
+            media_params = {
+                "fields": "timestamp,like_count,comments_count,insights.metric(saved)",
+                "since": day_start,
+                "until": day_end,
+                "limit": 100,
+                "access_token": access_token
+            }
+            
+            engagement = 0
+            try:
+                media_response = requests.get(media_url, params=media_params, timeout=15)
+                media_response.raise_for_status()
+                media_data = media_response.json()
+                
+                for post in media_data.get("data", []):
+                    likes = post.get("like_count", 0)
+                    comments = post.get("comments_count", 0)
+                    
+                    # Get saves from insights
+                    saves = 0
+                    insights = post.get("insights", {}).get("data", [])
+                    for insight in insights:
+                        if insight.get("name") == "saved":
+                            insight_values = insight.get("values", [])
+                            if insight_values:
+                                saves = insight_values[0].get("value", 0)
+                    
+                    engagement += likes + comments + saves
+            except Exception as e:
+                logging.warning(f"[SYNC] Failed to fetch Instagram media for {current_date}: {e}")
+            
+            # Insert reach metric
+            if reach > 0:
+                reach_metric = Metric(
+                    user_id=user.id,
+                    source_name="instagram",
+                    metric_date=current_date,
+                    metric_name="reach",
+                    metric_value=reach,
+                    meta={"ig_user_id": ig_user_id}
+                )
+                db.add(reach_metric)
+                metrics_inserted += 1
+            
+            # Insert engagement metric
+            if engagement > 0:
+                engagement_metric = Metric(
+                    user_id=user.id,
+                    source_name="instagram",
+                    metric_date=current_date,
+                    metric_name="engagement",
+                    metric_value=engagement,
+                    meta={"ig_user_id": ig_user_id}
+                )
+                db.add(engagement_metric)
+                metrics_inserted += 1
+            
+            # Respect API rate limits
+            time.sleep(0.5)
+            
+        except Exception as e:
+            logging.error(f"[SYNC] Instagram sync failed for date {current_date}: {e}")
+        
+        current_date += timedelta(days=1)
+    
+    try:
+        db.commit()
+        logging.info(f"[SYNC] Inserted {metrics_inserted} Instagram metrics for user={user.email}, range={start_date} to {end_date}")
+    except Exception as e:
+        db.rollback()
+        logging.error(f"[SYNC] Failed to insert Instagram metrics for user={user.email}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to save metrics: {str(e)}")
+    
+    return {
+        "status": "success",
+        "email": user.email,
+        "ig_user_id": ig_user_id,
+        "start_date": str(start_date),
+        "end_date": str(end_date),
+        "days": days,
+        "metrics_inserted": metrics_inserted
+    }
+
 @app.get("/v1/connections/status", dependencies=[Depends(require_api_key)])
 def connections_status(email: str, db: Session = Depends(get_db)):
     """
@@ -2210,18 +2624,14 @@ def run_ga4_sync_internal(user: User, db: Session, days: int = 1) -> dict:
 
 class SyncRequest(BaseModel):
     email: EmailStr
-    provider: str = Field(..., pattern="^google$")
+    provider: str = Field(..., pattern="^(google|instagram)$")
 
 @app.post("/v1/sync/run", dependencies=[Depends(require_admin_token)], include_in_schema=False)
-def run_ga4_sync(body: SyncRequest, db: Session = Depends(get_db)):
+def run_sync(body: SyncRequest, db: Session = Depends(get_db)):
     """
-    Manually trigger GA4 data sync for a user (yesterday only).
-    Admin-only endpoint. Requires saved GA4 property.
+    Manually trigger data sync for a user (yesterday only).
+    Admin-only endpoint. Supports google and instagram providers.
     """
-    # Verify provider
-    if body.provider != "google":
-        raise HTTPException(status_code=400, detail="Only 'google' provider supported")
-    
     # Get user
     user_result = db.execute(
         select(User).where(User.email == body.email)
@@ -2230,5 +2640,10 @@ def run_ga4_sync(body: SyncRequest, db: Session = Depends(get_db)):
     if not user_result:
         raise HTTPException(status_code=404, detail=f"User not found: {body.email}")
     
-    # Run sync for yesterday (1 day)
-    return run_ga4_sync_internal(user_result, db, days=1)
+    # Route to appropriate sync function
+    if body.provider == "google":
+        return run_ga4_sync_internal(user_result, db, days=1)
+    elif body.provider == "instagram":
+        return run_instagram_sync_internal(user_result, db, days=1)
+    else:
+        raise HTTPException(status_code=400, detail=f"Unsupported provider: {body.provider}")
