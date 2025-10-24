@@ -119,8 +119,8 @@ def _collect_kpis_for_period(
         for metric in ["sessions", "conversions", "reach", "engagement"]:
             totals[metric] += day_data[metric]
     
-    # Find best day
-    best_day = max(timeline.values(), key=lambda x: x["sessions"])
+    # Find best day (by conversions, fallback to sessions)
+    best_day = max(timeline.values(), key=lambda x: (x["conversions"], x["sessions"]))
     
     return {
         "totals": totals,
@@ -133,14 +133,27 @@ def _render_digest_html(
     user_id: str,
     period_start: date,
     period_end: date,
-    kpis: Dict[str, Any]
+    kpis: Dict[str, Any],
+    wow_deltas: Optional[Dict[str, float]] = None
 ) -> str:
-    """Render HTML email for weekly digest with unsubscribe link."""
+    """Render HTML email for weekly digest with WoW deltas and unsubscribe link."""
     totals = kpis["totals"]
     best_day = kpis["best_day"]
     timeline = kpis["timeline"]
     
     period_str = f"{period_start.strftime('%b %d')} - {period_end.strftime('%b %d, %Y')}"
+    
+    # Helper to render delta badges
+    def delta_badge(metric: str) -> str:
+        if not wow_deltas or metric not in wow_deltas:
+            return ""
+        delta = wow_deltas[metric]
+        if delta == 0:
+            return ""
+        
+        color = "#10b981" if delta > 0 else "#ef4444"
+        arrow = "↑" if delta > 0 else "↓"
+        return f'<div style="color: {color}; font-size: 14px; margin-top: 5px;">{arrow} {abs(delta):.1f}% vs last week</div>'
     
     # Generate unsubscribe token and link
     unsubscribe_token = generate_unsubscribe_token(user_id)
@@ -196,18 +209,22 @@ def _render_digest_html(
                     <div style="background: #f8f9fa; padding: 20px; border-radius: 8px; border-left: 4px solid #667eea;">
                         <div style="color: #666; font-size: 12px; text-transform: uppercase; letter-spacing: 1px;">Sessions</div>
                         <div style="font-size: 32px; font-weight: bold; color: #333; margin-top: 5px;">{totals['sessions']:,}</div>
+                        {delta_badge('sessions')}
                     </div>
                     <div style="background: #f8f9fa; padding: 20px; border-radius: 8px; border-left: 4px solid #f093fb;">
                         <div style="color: #666; font-size: 12px; text-transform: uppercase; letter-spacing: 1px;">Conversions</div>
                         <div style="font-size: 32px; font-weight: bold; color: #333; margin-top: 5px;">{totals['conversions']:,}</div>
+                        {delta_badge('conversions')}
                     </div>
                     <div style="background: #f8f9fa; padding: 20px; border-radius: 8px; border-left: 4px solid #4facfe;">
                         <div style="color: #666; font-size: 12px; text-transform: uppercase; letter-spacing: 1px;">Reach</div>
                         <div style="font-size: 32px; font-weight: bold; color: #333; margin-top: 5px;">{totals['reach']:,}</div>
+                        {delta_badge('reach')}
                     </div>
                     <div style="background: #f8f9fa; padding: 20px; border-radius: 8px; border-left: 4px solid #43e97b;">
                         <div style="color: #666; font-size: 12px; text-transform: uppercase; letter-spacing: 1px;">Engagement</div>
                         <div style="font-size: 32px; font-weight: bold; color: #333; margin-top: 5px;">{totals['engagement']:,}</div>
+                        {delta_badge('engagement')}
                     </div>
                 </div>
                 
@@ -221,7 +238,7 @@ def _render_digest_html(
                 <div style="background: #fff8e1; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #ffd54f;">
                     <h3 style="margin: 0 0 10px 0; color: #f57c00;">⭐ Best Day</h3>
                     <p style="margin: 0; color: #666;">
-                        {best_day['date'].strftime('%A, %B %d')} with <strong>{best_day['sessions']:,} sessions</strong>
+                        <strong>{best_day['date'].strftime('%A, %B %d')}</strong> was your highest performing day with <strong>{best_day['conversions']:,} conversions</strong> and <strong>{best_day['sessions']:,} sessions</strong>.
                     </p>
                 </div>
                 
@@ -295,17 +312,38 @@ def send_weekly_digest(user_id: str, db: Session) -> Dict[str, Any]:
         return {"status": "skipped", "message": "Already sent for this period", "user_id": str(user.id)}
     
     try:
-        # 4. Query metrics
+        # 4. Query current week metrics
         kpis = _collect_kpis_for_period(user_id, period_start, period_end, db)
         
-        # 5. Render email
-        html = _render_digest_html(user.email, str(user.id), period_start, period_end, kpis)
-        subject = "Your Weekly Living Lytics Digest"
+        # 5. Query previous week metrics for WoW comparison
+        prev_period_end = period_start - timedelta(days=1)
+        prev_period_start = prev_period_end - timedelta(days=6)
+        prev_kpis = _collect_kpis_for_period(user_id, prev_period_start, prev_period_end, db)
         
-        # 6. Send via Resend
+        # Calculate WoW deltas
+        wow_deltas = {}
+        for metric in ["sessions", "conversions", "reach", "engagement"]:
+            current = kpis["totals"][metric]
+            previous = prev_kpis["totals"][metric]
+            if previous > 0:
+                wow_deltas[metric] = ((current - previous) / previous) * 100
+            else:
+                wow_deltas[metric] = 100.0 if current > 0 else 0.0
+        
+        # 6. Build subject with key delta
+        best_metric = max(wow_deltas.items(), key=lambda x: x[1])
+        if best_metric[1] > 5:
+            subject = f"📈 Your Weekly Digest - {best_metric[0].capitalize()} up {best_metric[1]:.0f}%"
+        else:
+            subject = "Your Weekly Living Lytics Digest"
+        
+        # 7. Render email
+        html = _render_digest_html(user.email, str(user.id), period_start, period_end, kpis, wow_deltas)
+        
+        # 8. Send via Resend
         result = send_email_resend(user.email, subject, html)
         
-        # 7. Log success
+        # 9. Log success
         digest_log = DigestLog(
             user_id=user_id,
             period_start=period_start,
