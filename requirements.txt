@@ -8,3 +8,6 @@ PyGithub==2.*
 requests==2.*
 httpx
 email-validator
+APScheduler==3.11.0
+PyJWT==2.10.1
+tzlocal==5.3.1

@@ -5,6 +5,7 @@ import requests
 import hmac
 import hashlib
 from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 from typing import Dict, Any, Optional, List
 from fastapi import FastAPI, Depends, HTTPException, Header, Body, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,10 +13,19 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field, EmailStr
 from sqlalchemy import select, func, text
 from sqlalchemy.orm import Session
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 from db import get_db, engine
-from models import Base, User, Metric
+from models import Base, User, Metric, DigestLog
 from github import Github, GithubException
 from mailer import send_email_resend
+from scheduler_utils import (
+    get_last_completed_week,
+    send_weekly_digest,
+    run_weekly_digests,
+    verify_unsubscribe_token,
+    PT
+)
 
 # Configure basic logging
 logging.basicConfig(level=logging.INFO)
@@ -41,9 +51,24 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type"],
 )
 
+# Initialize APScheduler
+scheduler = AsyncIOScheduler(timezone=PT)
+
+def scheduled_digest_job():
+    """Scheduled job to run weekly digests for all opted-in users."""
+    logging.info("[SCHEDULER JOB] Starting scheduled weekly digest run")
+    db = next(get_db())
+    try:
+        result = run_weekly_digests(db)
+        logging.info(f"[SCHEDULER JOB] Complete: {result}")
+    except Exception as e:
+        logging.error(f"[SCHEDULER JOB] Error: {str(e)}")
+    finally:
+        db.close()
+
 @app.on_event("startup")
 def on_startup():
-    """Initialize database indexes and constraints on startup."""
+    """Initialize database indexes, constraints, and start scheduler on startup."""
     try:
         with engine.connect() as conn:
             # Create unique index on provider_id for idempotent webhook processing
@@ -55,6 +80,30 @@ def on_startup():
             logging.info("[STARTUP] Created unique index on email_events.provider_id")
     except Exception as e:
         logging.error(f"[STARTUP] Failed to create index: {str(e)}")
+    
+    # Start scheduler
+    try:
+        # Schedule weekly digest: Every Monday at 07:00 PT
+        scheduler.add_job(
+            scheduled_digest_job,
+            CronTrigger(day_of_week='mon', hour=7, minute=0, timezone=PT),
+            id='weekly_digest',
+            name='Weekly Digest Send',
+            replace_existing=True
+        )
+        scheduler.start()
+        logging.info("[SCHEDULER] Started with weekly digest job (Monday 07:00 PT)")
+    except Exception as e:
+        logging.error(f"[SCHEDULER] Failed to start: {str(e)}")
+
+@app.on_event("shutdown")
+def on_shutdown():
+    """Shut down scheduler gracefully."""
+    try:
+        scheduler.shutdown()
+        logging.info("[SCHEDULER] Shut down successfully")
+    except Exception as e:
+        logging.error(f"[SCHEDULER] Error during shutdown: {str(e)}")
 
 def require_api_key(authorization: str = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):
@@ -616,61 +665,141 @@ def digest_run(payload: DigestRunRequest, db: Session = Depends(get_db)):
         logging.error(f"[DIGEST RUN] Failed to send email to {payload.user_email}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to send digest: {str(e)}")
 
-@app.post("/v1/digest/run-all", dependencies=[Depends(require_api_key)])
-def digest_run_all(payload: DigestRunAllRequest, db: Session = Depends(get_db)):
-    """Admin endpoint: Send digest to all users with throttling."""
-    logging.info(f"[DIGEST RUN-ALL] Starting for all users, days={payload.days}")
+@app.post("/v1/digest/scheduled-run-all", dependencies=[Depends(require_api_key)])
+def scheduled_run_all_digests(db: Session = Depends(get_db)):
+    """
+    Admin endpoint: Run weekly digest for all opted-in users.
+    Uses scheduler logic with idempotency via digest_log.
+    """
+    logging.info("[ADMIN] Manual trigger of weekly digest run")
+    result = run_weekly_digests(db)
+    return result
+
+@app.get("/v1/digest/schedule", dependencies=[Depends(require_api_key)])
+def get_digest_schedule():
+    """Admin endpoint: Get scheduler information."""
+    jobs = scheduler.get_jobs()
     
-    # Get all users
-    users = db.execute(select(User.email)).scalars().all()
+    if not jobs:
+        return {
+            "timezone": "America/Los_Angeles",
+            "jobs": [],
+            "message": "No scheduled jobs found"
+        }
     
-    sent_count = 0
-    error_count = 0
-    errors = []
+    job_info = []
+    for job in jobs:
+        job_info.append({
+            "id": job.id,
+            "name": job.name,
+            "next_run": job.next_run_time.isoformat() if job.next_run_time else None,
+            "trigger": str(job.trigger)
+        })
     
-    for user_email in users:
-        try:
-            # Use the same logic as single digest
-            end_date = date.today()
-            start_date = end_date - timedelta(days=payload.days)
-            window_str = f"{start_date.strftime('%b %d')} - {end_date.strftime('%b %d, %Y')}"
-            
-            kpis = _collect_kpis_for_user(user_email, start_date, end_date, db)
-            
-            highlights = []
-            if kpis['ig_reach'] > 20000:
-                highlights.append(f"Strong reach: {kpis['ig_reach']:,.0f} impressions!")
-            if kpis['ig_engagement'] > 1000:
-                highlights.append(f"Great engagement: {kpis['ig_engagement']:,.0f} interactions!")
-            
-            watchouts = []
-            actions = ["Review your analytics dashboard"]
-            
-            html = _render_html(user_email, window_str, kpis, highlights, watchouts, actions)
-            
-            send_email_resend(user_email, f"Your {payload.days}-Day Analytics Digest", html)
-            sent_count += 1
-            logging.info(f"[DIGEST RUN-ALL] Sent to {user_email}")
-            
-            # Throttle to avoid provider limits (0.5 second between sends)
-            import time
-            time.sleep(0.5)
-            
-        except Exception as e:
-            error_count += 1
-            error_msg = f"{user_email}: {str(e)}"
-            errors.append(error_msg)
-            logging.error(f"[DIGEST RUN-ALL] Failed for {error_msg}")
-    
-    logging.info(f"[DIGEST RUN-ALL] Complete: sent={sent_count}, errors={error_count}")
+    # Get last completed week period
+    last_period_start, last_period_end = get_last_completed_week()
     
     return {
-        "sent": sent_count,
-        "errors": error_count,
-        "error_details": errors[:10],  # Return first 10 errors
-        "total_users": len(users),
-        "days": payload.days
+        "timezone": "America/Los_Angeles",
+        "jobs": job_info,
+        "last_completed_week": {
+            "period_start": last_period_start.isoformat(),
+            "period_end": last_period_end.isoformat()
+        }
     }
+
+# User Preference Endpoints (these would need user authentication in production)
+class DigestPreferencesUpdate(BaseModel):
+    opt_in_digest: bool
+
+@app.get("/v1/digest/preferences", dependencies=[Depends(require_api_key)])
+def get_digest_preferences(user_email: str, db: Session = Depends(get_db)):
+    """Get user's digest preferences. In production, use proper user auth instead of email param."""
+    user = db.execute(select(User).where(User.email == user_email)).scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    return {
+        "email": user.email,
+        "opt_in_digest": user.opt_in_digest,
+        "last_digest_sent_at": user.last_digest_sent_at.isoformat() if user.last_digest_sent_at else None
+    }
+
+@app.put("/v1/digest/preferences", dependencies=[Depends(require_api_key)])
+def update_digest_preferences(
+    user_email: str,
+    preferences: DigestPreferencesUpdate,
+    db: Session = Depends(get_db)
+):
+    """Update user's digest preferences. In production, use proper user auth instead of email param."""
+    user = db.execute(select(User).where(User.email == user_email)).scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    user.opt_in_digest = preferences.opt_in_digest
+    db.commit()
+    
+    logging.info(f"[PREFERENCES] User {user.email} set opt_in_digest={preferences.opt_in_digest}")
+    
+    return {
+        "email": user.email,
+        "opt_in_digest": user.opt_in_digest,
+        "message": "Preferences updated successfully"
+    }
+
+@app.get("/v1/digest/unsubscribe")
+def unsubscribe_from_digest(token: str, db: Session = Depends(get_db)):
+    """Unsubscribe from weekly digests using JWT token from email link."""
+    user_id = verify_unsubscribe_token(token)
+    
+    if not user_id:
+        return HTMLResponse(content="""
+            <!DOCTYPE html>
+            <html>
+            <head><title>Invalid Link</title></head>
+            <body style="font-family: sans-serif; text-align: center; padding: 50px;">
+                <h1>❌ Invalid or Expired Link</h1>
+                <p>This unsubscribe link is invalid or has expired.</p>
+            </body>
+            </html>
+        """, status_code=400)
+    
+    user = db.execute(select(User).where(User.id == user_id)).scalar_one_or_none()
+    if not user:
+        return HTMLResponse(content="""
+            <!DOCTYPE html>
+            <html>
+            <head><title>User Not Found</title></head>
+            <body style="font-family: sans-serif; text-align: center; padding: 50px;">
+                <h1>❌ User Not Found</h1>
+                <p>We couldn't find your account.</p>
+            </body>
+            </html>
+        """, status_code=404)
+    
+    # Opt out
+    user.opt_in_digest = False
+    db.commit()
+    
+    logging.info(f"[UNSUBSCRIBE] User {user.email} unsubscribed via token")
+    
+    return HTMLResponse(content=f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Unsubscribed</title>
+            <meta charset="UTF-8">
+        </head>
+        <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 0; background-color: #f5f5f5;">
+            <div style="max-width: 500px; margin: 50px auto; background: white; border-radius: 8px; padding: 40px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); text-align: center;">
+                <div style="font-size: 48px; margin-bottom: 20px;">✅</div>
+                <h1 style="color: #333; margin: 0 0 10px 0;">You're Unsubscribed</h1>
+                <p style="color: #666; margin: 0 0 20px 0;">You will no longer receive weekly digest emails at <strong>{user.email}</strong>.</p>
+                <p style="color: #999; font-size: 14px;">You can re-subscribe anytime from your account settings.</p>
+            </div>
+        </body>
+        </html>
+    """)
 
 # Metrics Timeline Endpoint
 @app.get("/v1/metrics/timeline", dependencies=[Depends(require_api_key)])
