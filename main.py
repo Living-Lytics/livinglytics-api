@@ -841,14 +841,28 @@ def unsubscribe_from_digest(token: str, db: Session = Depends(get_db)):
 
 # Metrics Timeline Endpoint
 @app.get("/v1/metrics/timeline", dependencies=[Depends(require_api_key)])
-def metrics_timeline(user_email: str, days: int = 7, db: Session = Depends(get_db)):
-    """Get daily metrics timeline for a user (last N days). Cached for 5 minutes."""
-    logging.info(f"[METRICS TIMELINE] user_email={user_email}, days={days}")
+def metrics_timeline(
+    request: Request,
+    user_email: Optional[str] = None,
+    email: Optional[str] = None,
+    days: int = 7,
+    db: Session = Depends(get_db)
+):
+    """Get daily metrics timeline for a user (last N days). Cached for 5 minutes.
+    
+    Accepts either 'user_email' or 'email' parameter for compatibility with Base44 frontend.
+    """
+    # Support both email and user_email parameters
+    user_email_param = user_email or email
+    if not user_email_param:
+        raise HTTPException(status_code=400, detail="Missing 'email' or 'user_email' parameter")
+    
+    logging.info(f"[METRICS TIMELINE] email={user_email_param}, days={days}")
     
     # Resolve email to account_id (strict match)
-    user = db.execute(select(User).where(User.email == user_email)).scalar_one_or_none()
+    user = db.execute(select(User).where(User.email == user_email_param)).scalar_one_or_none()
     if not user:
-        raise HTTPException(status_code=404, detail=f"User not found: {user_email}")
+        raise HTTPException(status_code=404, detail=f"User not found: {user_email_param}")
     
     # Calculate date range
     end_date = date.today()
