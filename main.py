@@ -28,8 +28,9 @@ if not API_KEY:
 app = FastAPI(title=APP_NAME)
 
 ALLOW_ORIGINS = [
-    "https://app.livinglytics.com",
-    "https://www.livinglytics.com",
+    "https://livinglytics.base44.app",
+    "https://livinglytics.com",
+    "http://localhost:5173",
 ]
 
 app.add_middleware(
@@ -111,7 +112,7 @@ def get_github_client():
 
 @app.get("/", include_in_schema=False)
 def root():
-    return {"message": "Living Lytics API is running", "docs": "/docs"}
+    return {"message": "Living Lytics API", "docs": "/docs"}
 
 @app.get("/v1/health/liveness")
 def liveness():
@@ -277,6 +278,13 @@ def github_repos(limit: int = 30):
 class DigestRequest(BaseModel):
     scope: str = Field(default="email", description="Scope: 'email' for single user or 'all' for all users")
     email: Optional[EmailStr] = Field(default=None, description="Email address when scope='email'")
+
+class DigestRunRequest(BaseModel):
+    user_email: EmailStr = Field(description="User email address")
+    days: int = Field(default=7, ge=1, le=90, description="Number of days to include in digest (1-90)")
+
+class DigestRunAllRequest(BaseModel):
+    days: int = Field(default=7, ge=1, le=90, description="Number of days to include in digest (1-90)")
 
 # Helper functions for digest
 def _collect_kpis_for_user(email: str, start_date: date, end_date: date, db: Session) -> Dict[str, float]:
@@ -555,6 +563,167 @@ def digest_test(payload: Dict[str, str] = Body(...), db: Session = Depends(get_d
     except Exception as e:
         logging.error(f"[DIGEST TEST] Failed to send test email to {email}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to send test email: {str(e)}")
+
+@app.post("/v1/digest/run", dependencies=[Depends(require_api_key)])
+def digest_run(payload: DigestRunRequest, db: Session = Depends(get_db)):
+    """Send digest email to a specific user for a specified number of days."""
+    logging.info(f"[DIGEST RUN] Called with user_email={payload.user_email}, days={payload.days}")
+    
+    # Resolve user_email to account_id (strict match)
+    user = db.execute(select(User).where(User.email == payload.user_email)).scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail=f"User not found: {payload.user_email}")
+    
+    # Calculate date window
+    end_date = date.today()
+    start_date = end_date - timedelta(days=payload.days)
+    window_str = f"{start_date.strftime('%b %d')} - {end_date.strftime('%b %d, %Y')}"
+    
+    # Collect KPIs for this user only (account_id based)
+    kpis = _collect_kpis_for_user(payload.user_email, start_date, end_date, db)
+    
+    # Generate insights
+    highlights = []
+    if kpis['ig_reach'] > 20000:
+        highlights.append(f"Strong reach: {kpis['ig_reach']:,.0f} impressions!")
+    if kpis['ig_engagement'] > 1000:
+        highlights.append(f"Great engagement: {kpis['ig_engagement']:,.0f} interactions!")
+    if kpis['ig_conversions'] > 500:
+        highlights.append(f"Excellent conversions: {kpis['ig_conversions']:,.0f}!")
+    
+    watchouts = []
+    if kpis['ig_sessions'] < 1000:
+        watchouts.append("Sessions below target - consider increasing ad spend")
+    
+    actions = ["Review your top-performing content", "Optimize low-engagement posts"]
+    
+    # Render HTML
+    html = _render_html(payload.user_email, window_str, kpis, highlights, watchouts, actions)
+    
+    # Send via Resend
+    try:
+        result = send_email_resend(payload.user_email, f"Your {payload.days}-Day Analytics Digest", html)
+        logging.info(f"[DIGEST RUN] Email sent to {payload.user_email}: {result}")
+        
+        return {
+            "sent": True,
+            "user_email": payload.user_email,
+            "period_start": start_date.isoformat(),
+            "period_end": end_date.isoformat(),
+            "days": payload.days
+        }
+    except Exception as e:
+        logging.error(f"[DIGEST RUN] Failed to send email to {payload.user_email}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to send digest: {str(e)}")
+
+@app.post("/v1/digest/run-all", dependencies=[Depends(require_api_key)])
+def digest_run_all(payload: DigestRunAllRequest, db: Session = Depends(get_db)):
+    """Admin endpoint: Send digest to all users with throttling."""
+    logging.info(f"[DIGEST RUN-ALL] Starting for all users, days={payload.days}")
+    
+    # Get all users
+    users = db.execute(select(User.email)).scalars().all()
+    
+    sent_count = 0
+    error_count = 0
+    errors = []
+    
+    for user_email in users:
+        try:
+            # Use the same logic as single digest
+            end_date = date.today()
+            start_date = end_date - timedelta(days=payload.days)
+            window_str = f"{start_date.strftime('%b %d')} - {end_date.strftime('%b %d, %Y')}"
+            
+            kpis = _collect_kpis_for_user(user_email, start_date, end_date, db)
+            
+            highlights = []
+            if kpis['ig_reach'] > 20000:
+                highlights.append(f"Strong reach: {kpis['ig_reach']:,.0f} impressions!")
+            if kpis['ig_engagement'] > 1000:
+                highlights.append(f"Great engagement: {kpis['ig_engagement']:,.0f} interactions!")
+            
+            watchouts = []
+            actions = ["Review your analytics dashboard"]
+            
+            html = _render_html(user_email, window_str, kpis, highlights, watchouts, actions)
+            
+            send_email_resend(user_email, f"Your {payload.days}-Day Analytics Digest", html)
+            sent_count += 1
+            logging.info(f"[DIGEST RUN-ALL] Sent to {user_email}")
+            
+            # Throttle to avoid provider limits (0.5 second between sends)
+            import time
+            time.sleep(0.5)
+            
+        except Exception as e:
+            error_count += 1
+            error_msg = f"{user_email}: {str(e)}"
+            errors.append(error_msg)
+            logging.error(f"[DIGEST RUN-ALL] Failed for {error_msg}")
+    
+    logging.info(f"[DIGEST RUN-ALL] Complete: sent={sent_count}, errors={error_count}")
+    
+    return {
+        "sent": sent_count,
+        "errors": error_count,
+        "error_details": errors[:10],  # Return first 10 errors
+        "total_users": len(users),
+        "days": payload.days
+    }
+
+# Metrics Timeline Endpoint
+@app.get("/v1/metrics/timeline", dependencies=[Depends(require_api_key)])
+def metrics_timeline(user_email: str, days: int = 7, db: Session = Depends(get_db)):
+    """Get daily metrics timeline for a user (last N days)."""
+    logging.info(f"[METRICS TIMELINE] user_email={user_email}, days={days}")
+    
+    # Resolve email to account_id (strict match)
+    user = db.execute(select(User).where(User.email == user_email)).scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail=f"User not found: {user_email}")
+    
+    # Calculate date range
+    end_date = date.today()
+    start_date = end_date - timedelta(days=days - 1)
+    
+    # Query metrics grouped by date (ensuring no cross-tenant data)
+    results = db.execute(
+        select(
+            Metric.metric_date,
+            Metric.metric_name,
+            func.sum(Metric.metric_value).label("total")
+        )
+        .where(Metric.user_id == user.id)
+        .where(Metric.metric_date >= start_date)
+        .where(Metric.metric_date <= end_date)
+        .group_by(Metric.metric_date, Metric.metric_name)
+        .order_by(Metric.metric_date)
+    ).all()
+    
+    # Build timeline structure
+    timeline = {}
+    for metric_date, metric_name, total in results:
+        date_str = metric_date.isoformat()
+        if date_str not in timeline:
+            timeline[date_str] = {
+                "date": date_str,
+                "sessions": 0,
+                "conversions": 0,
+                "reach": 0,
+                "engagement": 0
+            }
+        
+        # Map metric names (sessions, conversions, reach, engagement)
+        if metric_name in timeline[date_str]:
+            timeline[date_str][metric_name] = int(total) if total else 0
+    
+    # Convert to sorted list
+    timeline_list = sorted(timeline.values(), key=lambda x: x["date"])
+    
+    logging.info(f"[METRICS TIMELINE] Returning {len(timeline_list)} days of data")
+    
+    return timeline_list
 
 # Webhook and Email Events Endpoints
 
