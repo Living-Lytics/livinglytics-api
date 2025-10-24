@@ -4,14 +4,19 @@ import logging
 import requests
 import hmac
 import hashlib
+import uuid
+import time
+import random
+import threading
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import Dict, Any, Optional, List
+from collections import defaultdict
 from fastapi import FastAPI, Depends, HTTPException, Header, Body, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field, EmailStr
-from sqlalchemy import select, func, text
+from sqlalchemy import select, func, text, cast, DATE
 from sqlalchemy.orm import Session
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -27,8 +32,27 @@ from scheduler_utils import (
     PT
 )
 
-# Configure basic logging
-logging.basicConfig(level=logging.INFO)
+# Configure structured logging with JSON format
+logging.basicConfig(
+    level=logging.INFO,
+    format='{"level":"%(levelname)s","ts":"%(asctime)s","message":"%(message)s"}'
+)
+
+# Optional Sentry integration
+SENTRY_DSN = os.getenv("SENTRY_DSN")
+if SENTRY_DSN:
+    try:
+        import sentry_sdk
+        sentry_sdk.init(
+            dsn=SENTRY_DSN,
+            traces_sample_rate=0.1,
+            environment=os.getenv("ENV", "development")
+        )
+        logging.info("[SENTRY] Initialized successfully")
+    except ImportError:
+        logging.warning("[SENTRY] sentry-sdk not installed, skipping")
+    except Exception as e:
+        logging.error(f"[SENTRY] Failed to initialize: {e}")
 
 APP_NAME = os.getenv("APP_NAME", "Living Lytics API")
 API_KEY = os.getenv("FASTAPI_SECRET_KEY")
@@ -54,6 +78,47 @@ app.add_middleware(
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
 )
+
+# Request ID middleware for structured logging
+@app.middleware("http")
+async def add_request_id(request: Request, call_next):
+    """Add request_id to all requests for tracing."""
+    request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
+    request.state.request_id = request_id
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    return response
+
+# Simple in-memory rate limiter for admin endpoints (thread-safe)
+class InMemoryRateLimiter:
+    """Thread-safe token bucket rate limiter for admin endpoints."""
+    def __init__(self, capacity: int = 10, refill_rate: float = 1.0):
+        self.capacity = capacity
+        self.refill_rate = refill_rate  # tokens per second
+        self.buckets = defaultdict(lambda: {"tokens": capacity, "last_refill": time.time()})
+        self.lock = threading.Lock()
+    
+    def allow(self, key: str, tokens: int = 1) -> bool:
+        """Check if request is allowed under rate limit (thread-safe)."""
+        with self.lock:
+            bucket = self.buckets[key]
+            now = time.time()
+            
+            # Refill tokens based on time elapsed
+            elapsed = now - bucket["last_refill"]
+            bucket["tokens"] = min(
+                self.capacity,
+                bucket["tokens"] + elapsed * self.refill_rate
+            )
+            bucket["last_refill"] = now
+            
+            # Check if enough tokens available
+            if bucket["tokens"] >= tokens:
+                bucket["tokens"] -= tokens
+                return True
+            return False
+
+rate_limiter = InMemoryRateLimiter(capacity=10, refill_rate=0.5)  # 10 requests, refill 1 every 2 seconds
 
 # Initialize APScheduler
 scheduler = AsyncIOScheduler(timezone=PT)
@@ -349,6 +414,16 @@ class DigestRunRequest(BaseModel):
 
 class DigestRunAllRequest(BaseModel):
     days: int = Field(default=7, ge=1, le=90, description="Number of days to include in digest (1-90)")
+
+class SeedMetricsRequest(BaseModel):
+    email: EmailStr
+    days: int = Field(default=14, ge=1, le=365, description="Number of days to seed (1-365)")
+
+class SeedEmailEventsRequest(BaseModel):
+    email: EmailStr
+    events: int = Field(default=50, ge=1, le=500, description="Number of events to seed (1-500)")
+    start: Optional[str] = Field(default=None, description="Start date (YYYY-MM-DD)")
+    end: Optional[str] = Field(default=None, description="End date (YYYY-MM-DD)")
 
 # Helper functions for digest
 def _collect_kpis_for_user(email: str, start_date: date, end_date: date, db: Session) -> Dict[str, float]:
@@ -1219,6 +1294,298 @@ def email_events_summary(
         "limit": limit,
         "total": total,
         "has_next": has_next
+    }
+
+@app.get("/v1/email-events/health", dependencies=[Depends(require_api_key)])
+def email_events_health(
+    request: Request,
+    user_email: Optional[str] = None,
+    email: Optional[str] = None,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """Get delivery health KPIs (open rate, click rate, bounce rate) for a user.
+    
+    Returns delivery metrics with rates calculated for account-scoped email events.
+    """
+    from datetime import datetime as dt
+    
+    # Support both email and user_email parameters
+    user_email_param = user_email or email
+    if not user_email_param:
+        raise HTTPException(status_code=400, detail="email or user_email parameter required")
+    
+    # Default date range (last 30 days)
+    if not start:
+        start = (date.today() - timedelta(days=30)).isoformat()
+    if not end:
+        end = date.today().isoformat()
+    
+    logging.info(f"[EMAIL HEALTH] email={user_email_param}, start={start}, end={end}")
+    
+    # Resolve email to user for strict scoping
+    user = db.execute(select(User).where(User.email == user_email_param)).scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail=f"User not found: {user_email_param}")
+    
+    # Parse dates
+    start_date = dt.fromisoformat(start).date()
+    end_date = dt.fromisoformat(end).date()
+    
+    # Get event type counts
+    type_counts_query = select(
+        EmailEvent.event_type,
+        func.count(EmailEvent.id).label("count")
+    ).where(
+        EmailEvent.email == user_email_param
+    ).where(
+        cast(EmailEvent.created_at, DATE) >= start_date
+    ).where(
+        cast(EmailEvent.created_at, DATE) <= end_date
+    ).group_by(EmailEvent.event_type)
+    
+    type_counts_result = db.execute(type_counts_query).all()
+    counts = {row[0]: row[1] for row in type_counts_result}
+    
+    # Calculate raw counts
+    delivered = counts.get("email.delivered", 0)
+    opened = counts.get("email.opened", 0)
+    clicked = counts.get("email.clicked", 0)
+    bounced = counts.get("email.bounced", 0)
+    
+    # Calculate rates
+    open_rate = (opened / delivered) if delivered > 0 else 0.0
+    click_rate = (clicked / delivered) if delivered > 0 else 0.0
+    bounce_rate = (bounced / (delivered + bounced)) if (delivered + bounced) > 0 else 0.0
+    
+    # Get last event timestamp
+    last_event_query = select(
+        func.max(EmailEvent.created_at)
+    ).where(
+        EmailEvent.email == user_email_param
+    ).where(
+        cast(EmailEvent.created_at, DATE) >= start_date
+    ).where(
+        cast(EmailEvent.created_at, DATE) <= end_date
+    )
+    last_event_at = db.execute(last_event_query).scalar()
+    
+    response = {
+        "email": user_email_param,
+        "period": {
+            "start": start,
+            "end": end
+        },
+        "counts": {
+            "delivered": delivered,
+            "opened": opened,
+            "clicked": clicked,
+            "bounced": bounced
+        },
+        "rates": {
+            "open_rate": round(open_rate, 4),
+            "click_rate": round(click_rate, 4),
+            "bounce_rate": round(bounce_rate, 4)
+        },
+        "last_event_at": last_event_at.isoformat() if last_event_at else None
+    }
+    
+    # Add Cache-Control header for performance
+    return Response(
+        content=json.dumps(response),
+        media_type="application/json",
+        headers={"Cache-Control": "max-age=300"}
+    )
+
+@app.get("/v1/status")
+def system_status(db: Session = Depends(get_db)):
+    """Get system status information for UI badge/health checks.
+    
+    Returns environment, timezone, scheduler status, email provider, and version.
+    No authentication required for this endpoint.
+    """
+    # Get next scheduler run
+    next_run = None
+    try:
+        jobs = scheduler.get_jobs()
+        if jobs:
+            next_run = jobs[0].next_run_time.isoformat() if jobs[0].next_run_time else None
+    except Exception as e:
+        logging.warning(f"[STATUS] Failed to get scheduler info: {e}")
+    
+    # Get version from environment or git
+    version = os.getenv("VERSION", "69a2772")  # git SHA from earlier
+    
+    return {
+        "env": os.getenv("ENV", "production"),
+        "tz": str(PT),
+        "scheduler": {
+            "next_run": next_run
+        },
+        "email_provider": "resend",
+        "version": version
+    }
+
+@app.post("/v1/dev/seed-metrics", include_in_schema=False)
+def seed_metrics(
+    request: Request,
+    body: SeedMetricsRequest = Body(...),
+    authorization: str = Header(...),
+    db: Session = Depends(get_db)
+):
+    """Seed realistic metric data for testing and demos.
+    
+    Requires ADMIN_TOKEN. Hidden from OpenAPI schema.
+    """
+    # Verify admin token
+    token = authorization.replace("Bearer ", "")
+    if token != ADMIN_TOKEN:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    # Rate limiting
+    if not rate_limiter.allow(f"seed-metrics-{body.email}", tokens=1):
+        raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
+    
+    # Resolve user
+    user = db.execute(select(User).where(User.email == body.email)).scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail=f"User not found: {body.email}")
+    
+    logging.info(f"[SEED METRICS] email={body.email}, days={body.days}")
+    
+    # Generate realistic metric data
+    metrics_inserted = 0
+    today = date.today()
+    
+    for i in range(body.days):
+        metric_date = today - timedelta(days=i)
+        
+        # Generate realistic random values with trends
+        base_sessions = random.randint(800, 1500)
+        base_conversions = random.randint(50, 150)
+        base_reach = random.randint(2000, 4000)
+        base_engagement = random.randint(500, 1000)
+        
+        metrics_data = [
+            ("sessions", base_sessions),
+            ("conversions", base_conversions),
+            ("reach", base_reach),
+            ("engagement", base_engagement)
+        ]
+        
+        for metric_name, metric_value in metrics_data:
+            metric = Metric(
+                user_id=user.id,
+                source_name="demo",
+                metric_date=metric_date,
+                metric_name=metric_name,
+                metric_value=metric_value
+            )
+            db.add(metric)
+            metrics_inserted += 1
+    
+    db.commit()
+    
+    return {
+        "email": body.email,
+        "days": body.days,
+        "metrics_inserted": metrics_inserted,
+        "status": "success"
+    }
+
+@app.post("/v1/dev/seed-email-events", include_in_schema=False)
+def seed_email_events(
+    request: Request,
+    body: SeedEmailEventsRequest = Body(...),
+    authorization: str = Header(...),
+    db: Session = Depends(get_db)
+):
+    """Seed realistic email event data for testing and demos.
+    
+    Requires ADMIN_TOKEN. Hidden from OpenAPI schema.
+    """
+    from datetime import datetime as dt
+    
+    # Verify admin token
+    token = authorization.replace("Bearer ", "")
+    if token != ADMIN_TOKEN:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    # Rate limiting
+    if not rate_limiter.allow(f"seed-events-{body.email}", tokens=1):
+        raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
+    
+    # Resolve user
+    user = db.execute(select(User).where(User.email == body.email)).scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail=f"User not found: {body.email}")
+    
+    # Default date range (last 30 days)
+    start = body.start if body.start else (date.today() - timedelta(days=30)).isoformat()
+    end = body.end if body.end else date.today().isoformat()
+    
+    start_date = dt.fromisoformat(start).date()
+    end_date = dt.fromisoformat(end).date()
+    
+    logging.info(f"[SEED EMAIL EVENTS] email={body.email}, events={body.events}, start={start}, end={end}")
+    
+    # Event type distribution (realistic percentages)
+    event_types = [
+        ("email.delivered", 0.95),  # 95% delivered
+        ("email.opened", 0.40),     # 40% opened
+        ("email.clicked", 0.10),    # 10% clicked
+        ("email.bounced", 0.05)     # 5% bounced
+    ]
+    
+    events_inserted = 0
+    date_range = (end_date - start_date).days + 1
+    
+    for _ in range(body.events):
+        # Random date within range
+        random_days = random.randint(0, date_range - 1)
+        event_date = start_date + timedelta(days=random_days)
+        from datetime import time as dt_time
+        event_datetime = dt.combine(
+            event_date,
+            dt_time(random.randint(0, 23), random.randint(0, 59))
+        )
+        
+        # Select event type based on distribution
+        rand = random.random()
+        cumulative = 0.0
+        selected_type = "email.delivered"
+        
+        for event_type, probability in event_types:
+            cumulative += probability
+            if rand <= cumulative:
+                selected_type = event_type
+                break
+        
+        # Create event with unique provider_id
+        event = EmailEvent(
+            email=body.email,
+            event_type=selected_type,
+            provider_id=f"seed-{uuid.uuid4()}",
+            subject="Weekly Living Lytics Digest",
+            payload={},
+            created_at=event_datetime
+        )
+        db.add(event)
+        events_inserted += 1
+    
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        logging.error(f"[SEED EMAIL EVENTS] Error: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to insert events: {str(e)}")
+    
+    return {
+        "email": body.email,
+        "events_inserted": events_inserted,
+        "period": {"start": start, "end": end},
+        "status": "success"
     }
 
 @app.get("/v1/digest/status", dependencies=[Depends(require_api_key)])

@@ -1,0 +1,53 @@
+Goal: delivery health KPIs, status endpoint, Sentry/JSON logs, and a small data seeder.
+
+Tasks:
+
+1) Delivery Health KPIs (per user)
+   - GET /v1/email-events/health?email=<e>&start=YYYY-MM-DD&end=YYYY-MM-DD
+   - Returns:
+     {
+       "email": "...",
+       "period": {"start":"YYYY-MM-DD","end":"YYYY-MM-DD"},
+       "counts": {"delivered":0,"opened":0,"clicked":0,"bounced":0},
+       "rates": {
+         "open_rate": 0.42,     // opened/delivered
+         "click_rate": 0.11,    // clicked/delivered
+         "bounce_rate": 0.01    // bounced/(delivered+bounced)
+       },
+       "last_event_at": "ISO8601"
+     }
+   - Scope strictly by account_id for resolved email.
+   - Index email_events on (account_id, ts, type).
+
+2) System Status endpoint (for a small UI badge)
+   - GET /v1/status
+     -> {
+       "env": "prod",
+       "tz": "America/Los_Angeles",
+       "scheduler": {"next_run":"ISO8601"},
+       "email_provider": "resend",
+       "version": "<git_sha or app version>"
+     }
+   - Read next_run from scheduler; version from env or git.
+
+3) Sentry / JSON logs
+   - If SENTRY_DSN present: init at startup; capture unhandled exceptions.
+   - Else: ensure structured JSON logging (level, ts, request_id, route, user_id).
+   - Add request_id middleware (uuid4 if missing).
+
+4) Seeder (for demos)
+   - POST /v1/dev/seed-metrics (ADMIN_TOKEN required; include_in_schema=False)
+     Body: { "email":"user@example.com", "days":14 }
+     -> Insert daily metrics for last N days, realistic randoms.
+   - POST /v1/dev/seed-email-events (ADMIN_TOKEN required)
+     Body: { "email":"user@example.com", "events":50, "start":"YYYY-MM-DD","end":"YYYY-MM-DD" }
+
+5) Safety & Perf
+   - Rate-limit admin endpoints (simple token bucket in-memory).
+   - Cache-Control: max-age=300 for health endpoints too.
+
+6) Quick tests
+   - curl /v1/email-events/health?email=<e>&start=...&end=...
+   - curl /v1/status
+   - POST seed* endpoints with ADMIN_TOKEN, then fetch timelines + health.
+
