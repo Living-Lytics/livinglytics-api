@@ -12,6 +12,7 @@ Living Lytics API is a production-ready analytics engine and data integration pl
 - GitHub integration via Replit connector for automatic OAuth management
 - **Google OAuth integration** for GA4 analytics with automatic 30-day backfill
 - **Instagram OAuth integration** for reach/engagement metrics with automatic 30-day backfill
+- **Meta/Facebook OAuth** environment variables (META_APP_ID, META_APP_SECRET, META_OAUTH_REDIRECT) for Instagram Graph API integration
 - Public-only data exposure for GitHub endpoints (private repos filtered)
 - **Structured logging** with user_id, period, and status for digest operations
 - **Cache-Control headers** on timeline endpoint (5 minutes) for performance
