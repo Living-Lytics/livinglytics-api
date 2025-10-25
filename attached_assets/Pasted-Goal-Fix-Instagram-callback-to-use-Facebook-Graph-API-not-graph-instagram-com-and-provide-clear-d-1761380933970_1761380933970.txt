@@ -1,0 +1,51 @@
+Goal: Fix Instagram callback to use Facebook Graph API (not graph.instagram.com) and provide clear diagnostics.
+
+Tasks:
+
+1) Fix callback user discovery
+   - In /v1/connections/instagram/callback after exchanging code→short token→long-lived token:
+     a) Fetch Pages:
+        GET https://graph.facebook.com/v19.0/me/accounts
+        params: access_token=<long_lived_user_token>
+     b) For each page, fetch:
+        GET https://graph.facebook.com/v19.0/{page_id}
+        params: fields=instagram_business_account,access_token=<long_lived_user_token>
+        If instagram_business_account present:
+           ig_user_id = response["instagram_business_account"]["id"]
+           break
+     c) If no ig_user_id found:
+        return 400 with detail "No Instagram Business account linked to any managed Page. Link IG to a Facebook Page and retry."
+     d) Fetch basic IG info:
+        GET https://graph.facebook.com/v19.0/{ig_user_id}
+        params: fields=username,access_token=<long_lived_user_token>
+        username = resp["username"]
+
+   - Save in DB (instagram_accounts / oauth_tokens):
+       { user_id, ig_user_id, username, page_id, access_token=<long_lived_user_token>, expires_at=<now+60d> }
+
+   - Start initial 30-day backfill (run_instagram_sync).
+
+2) Stop using graph.instagram.com
+   - Remove/replace any calls to https://graph.instagram.com/*
+   - Use only https://graph.facebook.com/v19.0/* for IG Graph calls.
+
+3) Improve errors & logs
+   - If /me/accounts returns empty -> return 400 with "This Facebook user manages no Pages."
+   - If a Page has no instagram_business_account -> continue; at end return guidance message (how to link IG↔Page).
+   - Log helpful hints:
+     "[OAUTH] Ensure scopes: instagram_basic, instagram_manage_insights, pages_show_list, pages_read_engagement"
+
+4) Add a diagnostics endpoint (admin-only)
+   - GET /v1/debug/facebook-check?email=<e>  (require ADMIN_TOKEN; include_in_schema=False)
+   - Using the stored long-lived token:
+       • GET /v19.0/me/permissions  -> return granted permissions
+       • GET /v19.0/me/accounts     -> return page ids/names
+       • For first page: GET /{page_id}?fields=instagram_business_account
+   - Return JSON summary so we can see exactly what's missing.
+
+5) Verify flow
+   - Re-run OAuth init → callback.
+   - Expect logs:
+     [OAUTH] Exchanged long-lived token
+     [OAUTH] Found page=<id> ig_user_id=<id> username=<name>
+     [SYNC] Running initial 30-day IG backfill

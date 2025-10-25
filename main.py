@@ -1479,6 +1479,103 @@ def debug_instagram_config():
         "status": "ok" if all_configured else "missing"
     }
 
+@app.get("/v1/debug/facebook-check", include_in_schema=False)
+def debug_facebook_check(
+    email: str,
+    authorization: str = Header(...),
+    db: Session = Depends(get_db)
+):
+    """
+    Diagnostic endpoint to inspect Facebook Pages, permissions, and Instagram links.
+    Requires ADMIN_TOKEN. Hidden from OpenAPI schema.
+    """
+    # Verify admin token
+    token = authorization.replace("Bearer ", "")
+    if token != ADMIN_TOKEN:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    # Find user
+    user = db.execute(
+        select(User).where(User.email == email)
+    ).scalar_one_or_none()
+    
+    if not user:
+        raise HTTPException(status_code=404, detail=f"User not found: {email}")
+    
+    # Find Instagram data source
+    ig_source = db.execute(
+        select(DataSource).where(
+            DataSource.user_id == user.id,
+            DataSource.source_name == "instagram"
+        )
+    ).scalar_one_or_none()
+    
+    if not ig_source:
+        raise HTTPException(status_code=404, detail=f"No Instagram connection found for user: {email}")
+    
+    access_token = ig_source.access_token
+    results = {
+        "email": email,
+        "stored_ig_user_id": ig_source.refresh_token,
+        "stored_username": ig_source.account_ref,
+        "expires_at": ig_source.expires_at.isoformat() if ig_source.expires_at else None,
+        "diagnostics": {}
+    }
+    
+    # Check permissions
+    try:
+        perms_url = "https://graph.facebook.com/v19.0/me/permissions"
+        perms_response = requests.get(perms_url, params={"access_token": access_token}, timeout=10)
+        perms_response.raise_for_status()
+        perms_data = perms_response.json()
+        granted_permissions = [p["permission"] for p in perms_data.get("data", []) if p.get("status") == "granted"]
+        results["diagnostics"]["granted_permissions"] = granted_permissions
+    except Exception as e:
+        results["diagnostics"]["granted_permissions"] = f"Error: {str(e)}"
+    
+    # Check pages
+    try:
+        pages_url = "https://graph.facebook.com/v19.0/me/accounts"
+        pages_response = requests.get(pages_url, params={"access_token": access_token}, timeout=10)
+        pages_response.raise_for_status()
+        pages_data = pages_response.json()
+        pages = pages_data.get("data", [])
+        results["diagnostics"]["pages_count"] = len(pages)
+        results["diagnostics"]["pages"] = []
+        
+        # For each page, check for IG business account
+        for page in pages:
+            page_id = page.get("id")
+            page_name = page.get("name")
+            
+            page_info = {
+                "id": page_id,
+                "name": page_name,
+                "instagram_business_account": None
+            }
+            
+            try:
+                page_detail_url = f"https://graph.facebook.com/v19.0/{page_id}"
+                page_detail_response = requests.get(
+                    page_detail_url,
+                    params={"fields": "instagram_business_account", "access_token": access_token},
+                    timeout=10
+                )
+                page_detail_response.raise_for_status()
+                page_detail = page_detail_response.json()
+                
+                if "instagram_business_account" in page_detail:
+                    ig_account = page_detail["instagram_business_account"]
+                    page_info["instagram_business_account"] = ig_account.get("id")
+            except Exception as e:
+                page_info["error"] = str(e)
+            
+            results["diagnostics"]["pages"].append(page_info)
+    except Exception as e:
+        results["diagnostics"]["pages"] = f"Error: {str(e)}"
+    
+    return results
+
 @app.post("/v1/dev/seed-metrics", include_in_schema=False)
 def seed_metrics(
     request: Request,
@@ -2068,20 +2165,95 @@ def instagram_oauth_callback(code: str, state: str, db: Session = Depends(get_db
     expires_at = datetime.now() + timedelta(seconds=expires_in)
     logging.info(f"[OAUTH] Token expires in {expires_in}s ({expires_in/86400:.1f} days), expires_at={expires_at.isoformat()}")
     
-    # Get Instagram username and user ID using the access token
-    username = None
-    ig_user_id = None
+    # Discover Instagram Business account through Facebook Pages
+    logging.info(f"[OAUTH] Discovering Instagram Business account via Facebook Pages for user={email}")
+    logging.info(f"[OAUTH] Ensure scopes: instagram_basic, instagram_manage_insights, pages_show_list, pages_read_engagement")
+    
+    # Step 1: Fetch user's Facebook Pages
+    pages_url = "https://graph.facebook.com/v19.0/me/accounts"
+    pages_params = {"access_token": access_token}
+    
     try:
-        user_info_url = f"https://graph.instagram.com/me?fields=id,username&access_token={access_token}"
-        user_info_response = requests.get(user_info_url, timeout=10)
-        user_info_response.raise_for_status()
-        user_info = user_info_response.json()
-        ig_user_id = user_info.get("id")
-        username = user_info.get("username", ig_user_id)
-        logging.info(f"[OAUTH] Retrieved Instagram user: {username} (ID: {ig_user_id})")
+        pages_response = requests.get(pages_url, params=pages_params, timeout=10)
+        pages_response.raise_for_status()
+        pages_data = pages_response.json()
+    except requests.RequestException as e:
+        error_detail = f"Status: {getattr(e.response, 'status_code', 'N/A')}, URL: {pages_url}"
+        logging.error(f"[OAUTH] Failed to fetch Facebook Pages: {e}, {error_detail}")
+        if hasattr(e.response, 'text'):
+            logging.error(f"[OAUTH] Response body: {e.response.text}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch Facebook Pages: {str(e)}"
+        )
+    
+    pages = pages_data.get("data", [])
+    
+    if not pages:
+        logging.error(f"[OAUTH] No Facebook Pages managed by user={email}")
+        raise HTTPException(
+            status_code=400,
+            detail="This Facebook user manages no Pages. Create or get access to a Facebook Page, link your Instagram Business account to it, then retry."
+        )
+    
+    logging.info(f"[OAUTH] Found {len(pages)} Facebook Page(s) for user={email}")
+    
+    # Step 2: For each page, check if it has an Instagram Business account linked
+    ig_user_id = None
+    username = None
+    page_id = None
+    
+    for page in pages:
+        page_id_candidate = page.get("id")
+        page_name = page.get("name", "Unknown")
+        
+        logging.info(f"[OAUTH] Checking page '{page_name}' (ID: {page_id_candidate}) for Instagram Business account")
+        
+        try:
+            page_detail_url = f"https://graph.facebook.com/v19.0/{page_id_candidate}"
+            page_detail_params = {
+                "fields": "instagram_business_account",
+                "access_token": access_token
+            }
+            page_detail_response = requests.get(page_detail_url, params=page_detail_params, timeout=10)
+            page_detail_response.raise_for_status()
+            page_detail = page_detail_response.json()
+            
+            if "instagram_business_account" in page_detail:
+                ig_account = page_detail["instagram_business_account"]
+                ig_user_id = ig_account.get("id")
+                page_id = page_id_candidate
+                logging.info(f"[OAUTH] Found Instagram Business account linked to page '{page_name}': ig_user_id={ig_user_id}")
+                break
+            else:
+                logging.info(f"[OAUTH] Page '{page_name}' has no Instagram Business account linked")
+        except Exception as e:
+            logging.warning(f"[OAUTH] Failed to check page '{page_name}' for IG account: {e}")
+            continue
+    
+    if not ig_user_id:
+        logging.error(f"[OAUTH] No Instagram Business account found linked to any Facebook Page for user={email}")
+        raise HTTPException(
+            status_code=400,
+            detail="No Instagram Business account linked to any managed Page. Please link your Instagram Business or Creator account to one of your Facebook Pages, then retry the connection."
+        )
+    
+    # Step 3: Fetch Instagram username
+    try:
+        ig_info_url = f"https://graph.facebook.com/v19.0/{ig_user_id}"
+        ig_info_params = {
+            "fields": "username",
+            "access_token": access_token
+        }
+        ig_info_response = requests.get(ig_info_url, params=ig_info_params, timeout=10)
+        ig_info_response.raise_for_status()
+        ig_info = ig_info_response.json()
+        username = ig_info.get("username", ig_user_id)
+        logging.info(f"[OAUTH] Retrieved Instagram username: {username} (ig_user_id={ig_user_id}, page_id={page_id})")
     except Exception as e:
-        logging.error(f"[OAUTH] Failed to fetch Instagram user info: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to retrieve Instagram user info: {str(e)}")
+        logging.error(f"[OAUTH] Failed to fetch Instagram username: {e}")
+        # Use ig_user_id as fallback username
+        username = ig_user_id
     
     # Check for existing Instagram metrics BEFORE creating/updating data source
     existing_metrics_count = db.execute(
@@ -2309,7 +2481,7 @@ def run_instagram_sync_internal(user: User, db: Session, days: int = 30) -> dict
             day_end = int(datetime.combine(current_date, datetime.max.time()).timestamp())
             
             # Fetch daily insights (reach, impressions, profile_views)
-            insights_url = f"https://graph.instagram.com/v19.0/{ig_user_id}/insights"
+            insights_url = f"https://graph.facebook.com/v19.0/{ig_user_id}/insights"
             insights_params = {
                 "metric": "reach,impressions,profile_views",
                 "period": "day",
@@ -2335,7 +2507,7 @@ def run_instagram_sync_internal(user: User, db: Session, days: int = 30) -> dict
                 logging.warning(f"[SYNC] Failed to fetch Instagram insights for {current_date}: {e}")
             
             # Fetch media for engagement
-            media_url = f"https://graph.instagram.com/v19.0/{ig_user_id}/media"
+            media_url = f"https://graph.facebook.com/v19.0/{ig_user_id}/media"
             media_params = {
                 "fields": "timestamp,like_count,comments_count,insights.metric(saved)",
                 "since": day_start,
