@@ -1458,6 +1458,27 @@ def system_status(db: Session = Depends(get_db)):
         "version": version
     }
 
+@app.get("/v1/debug/instagram-config", include_in_schema=False)
+def debug_instagram_config():
+    """
+    Diagnostic endpoint to verify Instagram OAuth configuration.
+    Returns whether secrets are loaded (not the actual values).
+    
+    Hidden from OpenAPI schema for security.
+    """
+    has_app_id = bool(META_APP_ID)
+    has_app_secret = bool(META_APP_SECRET)
+    has_redirect = bool(META_OAUTH_REDIRECT)
+    
+    all_configured = has_app_id and has_app_secret and has_redirect
+    
+    return {
+        "META_APP_ID": has_app_id,
+        "META_APP_SECRET": has_app_secret,
+        "META_OAUTH_REDIRECT": META_OAUTH_REDIRECT if has_redirect else None,
+        "status": "ok" if all_configured else "missing"
+    }
+
 @app.post("/v1/dev/seed-metrics", include_in_schema=False)
 def seed_metrics(
     request: Request,
