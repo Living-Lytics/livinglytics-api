@@ -1,10 +1,12 @@
 import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-dom';
+import { useEffect } from 'react';
 import { ToastProvider } from './components/Toast';
 import { Dashboard } from './routes/Dashboard';
 import { Connections } from './routes/Connections';
 import { Settings } from './routes/Settings';
 import { CallbackGoogle } from './routes/CallbackGoogle';
 import { CallbackInstagram } from './routes/CallbackInstagram';
+import { useStore } from './lib/useStore';
 
 const Navigation = () => {
   const location = useLocation();
@@ -73,19 +75,27 @@ const NotFound = () => (
   </div>
 );
 
-const Layout = () => (
-  <div className="flex">
-    <Navigation />
-    <main className="flex-1 bg-gray-50 min-h-screen">
-      <Routes>
-        <Route path="/" element={<Dashboard />} />
-        <Route path="/connections" element={<Connections />} />
-        <Route path="/settings" element={<Settings />} />
-        <Route path="*" element={<NotFound />} />
-      </Routes>
-    </main>
-  </div>
-);
+const Layout = () => {
+  const { refreshConnections } = useStore();
+
+  useEffect(() => {
+    refreshConnections();
+  }, [refreshConnections]);
+
+  return (
+    <div className="flex">
+      <Navigation />
+      <main className="flex-1 bg-gray-50 min-h-screen">
+        <Routes>
+          <Route path="/" element={<Dashboard />} />
+          <Route path="/connections" element={<Connections />} />
+          <Route path="/settings" element={<Settings />} />
+          <Route path="*" element={<NotFound />} />
+        </Routes>
+      </main>
+    </div>
+  );
+};
 
 function App() {
   return (
