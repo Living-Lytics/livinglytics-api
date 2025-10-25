@@ -1,0 +1,312 @@
+Prompt for Replit — Build the Living Lytics Frontend
+
+Build a React + Vite single-page app for Living Lytics. Use TypeScript, React Router, TailwindCSS, and axios. Organize cleanly, production-ready. The app talks to my existing backend (FastAPI) via HTTPS using a bearer key. Do NOT store OAuth tokens in the browser.
+
+Brand
+
+App name: Living Lytics
+
+Tagline: Where data comes alive.
+
+Style: clean, modern, light theme; subtle gradients; rounded cards.
+
+Environment variables (Vite)
+
+Create and read these from .env:
+
+VITE_API_BASE = backend base URL (e.g., https://livinglytics-api.<user>.replit.app)
+
+VITE_API_KEY = bearer key that the backend expects
+
+VITE_OAUTH_IG_INIT = backend URL to start Instagram OAuth (e.g., ${VITE_API_BASE}/v1/oauth/instagram/init)
+
+VITE_OAUTH_GA_INIT = backend URL to start Google (GA4) OAuth (e.g., ${VITE_API_BASE}/v1/oauth/google/init)
+
+VITE_REDIRECT_BASE = this frontend’s base URL (use to compute callback routes, e.g., https://<this-frontend>.replit.app)
+
+Use Vite’s import.meta.env to read them. Never hardcode secrets in code; all requests must include an Authorization: Bearer <VITE_API_KEY> header.
+
+Routing (React Router)
+
+/ → Dashboard (if nothing connected, show friendly empty state + connect CTAs)
+
+/connections → Connections (status + connect buttons)
+
+/settings → Settings (org name placeholder, “Disconnect & Delete Data”)
+
+/oauth/callback/google → Handles GA4 OAuth return
+
+/oauth/callback/instagram → Handles IG OAuth return
+
+/* → NotFound
+
+App state
+
+Use Zustand or React Context for tiny global state:
+
+type ConnectionStatus = {
+  instagram: 'connected' | 'not_connected' | 'error';
+  google: 'connected' | 'not_connected' | 'error';
+  lastSyncedAt?: string;
+};
+
+
+Provide setters and a refreshConnections() that calls backend status endpoint (see “API calls”).
+
+API client (axios)
+
+src/lib/api.ts
+
+Base URL: VITE_API_BASE
+
+Default headers: Authorization: Bearer ${VITE_API_KEY}, Content-Type: application/json
+
+Helpers:
+
+getTiles(range: 'last_7d'|'last_30d'|'last_90d') -> {kpis: [...], last_updated: string}
+
+getTimeline(params) -> {series:[...], grain:'daily'}
+
+getInsights(range) -> Insight[]
+
+postWeeklyDigest(orgId) -> {ok:true, html:string}
+
+getConnectionStatus() -> ConnectionStatus
+
+disconnect(provider) -> {ok:true} (optional)
+All functions must handle errors with thrown Error objects; the UI shows toasts.
+
+Pages & behavior
+1) Connections (/connections)
+
+Card layout with two large tiles:
+
+Google Analytics 4
+
+Badge: “Not Connected” / “Connected”
+
+Button: Connect Google Analytics
+
+On click: window.location.href = ${VITE_OAUTH_GA_INIT}?redirect_uri=${encodeURIComponent(VITE_REDIRECT_BASE + '/oauth/callback/google')}``
+
+After callback completes (see callback route), call refreshConnections() and toast success.
+
+Instagram Business
+
+Badge: “Not Connected” / “Connected”
+
+Button: Connect Instagram Business
+
+On click: window.location.href = ${VITE_OAUTH_IG_INIT}?redirect_uri=${encodeURIComponent(VITE_REDIRECT_BASE + '/oauth/callback/instagram')}``
+
+After callback completes, call refreshConnections() and toast success.
+
+Below the cards, show mini logs:
+
+“Last synced: <timestamp or ‘—’>”
+
+Hidden Admin button: “Run IG Backfill (30d)” (show only if localStorage.userRole === 'admin')
+
+Calls POST ${VITE_API_BASE}/v1/sync/run?provider=instagram with Authorization header; toast success/error.
+
+Notes
+
+If backend returns a “not business/creator account” error for IG, show a help callout with bullets on converting IG to Professional & linking to a Page.
+
+2) OAuth Callback pages
+
+/oauth/callback/google
+
+/oauth/callback/instagram
+
+Each callback page:
+
+Parse code, state, and any error from window.location.search.
+
+If error, show a friendly failure card with a “Try again” button → /connections.
+
+Otherwise POST to backend to finalize the exchange:
+
+Google: POST ${VITE_API_BASE}/v1/oauth/google/exchange body { code, redirect_uri }
+
+Instagram: POST ${VITE_API_BASE}/v1/oauth/instagram/exchange body { code, redirect_uri }
+
+Show spinner “Finalizing connection…”
+
+On 200, redirect to /connections with toast “Connected successfully.”
+
+If backend instead expects a generic handoff, also include a fallback to POST /v1/oauth/store with { provider, code, redirect_uri }.
+
+All posts include bearer header.
+
+If these /exchange endpoints don’t exist yet, keep the code but gracefully detect 404 and display: “Connection received—please finish backend OAuth exchange.” Then still return to /connections.
+
+3) Dashboard (/)
+
+Top bar: page title + date range selector (Last 7 days, Last 30 days, Last 90 days).
+
+If both connections are not connected → big empty state:
+
+“Connect your accounts to see insights”
+
+Two buttons linking to /connections
+
+If at least one is connected:
+
+KPI tiles (4): Sessions, Conversions, IG Reach, IG Engagement
+
+Pull from GET /v1/dashboard/tiles?range=<range>
+
+Each tile shows value + Δ% vs prior period (use the API’s delta_pct)
+
+Combined timeline chart
+
+Use recharts (LineChart) with two series: ga_sessions and ig_reach
+
+Data from GET /v1/timeline?metrics=ig_reach,ga_sessions&grain=daily&range=<range>
+
+Insights panel
+
+Card list of GET /v1/insights?range=<range>
+
+Each card:
+
+bold summary
+
+small evidence (e.g., “corr 0.78, lag 1d”)
+
+“Suggested action” as a subline
+
+Empty state: “No insights yet; data is still processing.”
+
+Refresh button (top right) that refetches tiles, timeline, insights in parallel.
+
+4) Settings (/settings)
+
+Organization name (local only)
+
+Button: Disconnect & Delete Data
+
+Confirm modal; on yes:
+
+Call ${VITE_API_BASE}/v1/disconnect/all (or call Instagram/Google individually if needed)
+
+Clear any local caches/state
+
+Toast “Disconnected. Your data will be removed.”
+
+5) Layout & navigation
+
+Left sidebar: Logo (LL), links: Dashboard, Connections, Settings.
+
+App header shows “Living Lytics”.
+
+Mobile responsive.
+
+Components
+
+components/Tile.tsx – KPI tile
+
+components/Timeline.tsx – line chart wrapper (recharts)
+
+components/InsightCard.tsx
+
+components/Page.tsx – shell with title & actions area
+
+components/Toast.tsx – lightweight toast system (Context)
+
+Error & loading UX
+
+Skeletons for KPI and timeline while loading.
+
+Centralized error boundary: show card with retry.
+
+Toasts for success/failure of connects, refresh, backfill.
+
+Caching
+
+Cache latest tiles and insights in memory for the current session.
+
+If API fails, show last successful values (if any) with a “Data may be stale” badge.
+
+Access control stub
+
+If localStorage.userRole === 'admin' → show admin-only controls (Run IG Backfill).
+
+Otherwise hide admin buttons.
+
+File structure
+src/
+  main.tsx
+  App.tsx
+  routes/
+    Dashboard.tsx
+    Connections.tsx
+    Settings.tsx
+    CallbackGoogle.tsx
+    CallbackInstagram.tsx
+    NotFound.tsx
+  components/
+    Page.tsx
+    Tile.tsx
+    Timeline.tsx
+    InsightCard.tsx
+    Toast.tsx
+  lib/
+    api.ts
+    useStore.ts
+  styles/
+    index.css
+
+API endpoints to call (assume they exist)
+
+GET /v1/dashboard/tiles?range=last_7d|last_30d|last_90d
+
+GET /v1/timeline?metrics=ig_reach,ga_sessions&grain=daily&range=...
+
+GET /v1/insights?range=...
+
+GET /v1/connections/status (returns {instagram, google, lastSyncedAt})
+
+POST /v1/oauth/google/exchange body {code, redirect_uri}
+
+POST /v1/oauth/instagram/exchange body {code, redirect_uri}
+
+POST /v1/sync/run?provider=instagram (admin)
+
+POST /v1/disconnect/all (or provider-specific)
+All requests include header: Authorization: Bearer ${VITE_API_KEY}.
+
+Acceptance criteria
+
+On /connections, clicking Connect Instagram Business navigates to Meta’s OAuth (via VITE_OAUTH_IG_INIT) and, after consent, returns to /oauth/callback/instagram, exchanges code with the backend, then shows Connected with a success toast.
+
+On /connections, clicking Connect Google Analytics does the same via VITE_OAUTH_GA_INIT → /oauth/callback/google.
+
+/ shows:
+
+KPI tiles (values and delta%)
+
+Combined timeline (GA sessions + IG reach)
+
+Insight cards with summary + evidence + action
+
+Date range selector (7/30/90 days) refreshes tiles/timeline/insights.
+
+Admin “Run IG Backfill (30d)” is only visible for userRole=admin and shows success toast.
+
+Network failures show toasts and fallback to last cached results if available.
+
+No OAuth tokens are stored in the browser; only the backend handles tokens.
+
+All API calls use Authorization: Bearer <VITE_API_KEY>.
+
+What you’ll set in .env after it scaffolds
+VITE_API_BASE=https://livinglytics-api.<yourusername>.replit.app
+VITE_API_KEY=<the same bearer key you put in your backend>
+VITE_OAUTH_IG_INIT=https://livinglytics-api.<yourusername>.replit.app/v1/oauth/instagram/init
+VITE_OAUTH_GA_INIT=https://livinglytics-api.<yourusername>.replit.app/v1/oauth/google/init
+VITE_REDIRECT_BASE=https://<this-frontend-name>.<yourusername>.replit.app
+
+
+If your backend doesn’t have /v1/oauth/*/init & /exchange yet, keep the code but surface helpful messages; once backend endpoints exist, it will work without front-end changes.
