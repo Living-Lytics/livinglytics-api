@@ -1,0 +1,64 @@
+Goal: Fix Instagram Graph API token exchange (400 error) and implement automatic 60-day token refresh.
+
+Tasks:
+
+1) Correct OAuth callback flow
+   - Endpoint: /v1/connections/instagram/callback
+   - Replace incorrect POST https://api.instagram.com/oauth/access_token
+     with the proper Graph API calls:
+       a) Exchange short-lived code for user token:
+          POST https://graph.facebook.com/v19.0/oauth/access_token
+          Params:
+            client_id = META_APP_ID
+            client_secret = META_APP_SECRET
+            redirect_uri = META_OAUTH_REDIRECT
+            code = <code from callback>
+       b) Exchange short-lived token for long-lived token:
+          GET https://graph.facebook.com/v19.0/oauth/access_token
+          Params:
+            grant_type = fb_exchange_token
+            client_id = META_APP_ID
+            client_secret = META_APP_SECRET
+            fb_exchange_token = <short_lived_access_token>
+       c) Save returned access_token + expires_in (typically 5184000s ≈ 60 days)
+          in oauth_tokens/instagram_accounts table.
+
+2) Implement auto-refresh logic
+   - Create helper refresh_instagram_token(user_id):
+     - Load user’s current token + expires_at
+     - If expires_at < now() + timedelta(days=7):
+         GET https://graph.facebook.com/v19.0/oauth/access_token
+           ?grant_type=fb_exchange_token
+           &client_id=META_APP_ID
+           &client_secret=META_APP_SECRET
+           &fb_exchange_token=<current_token>
+         - Update access_token + expires_at
+         - Log “[OAUTH] Refreshed long-lived IG token for <email>”
+   - Call this helper during:
+       • Nightly scheduler job before daily sync
+       • On-demand via admin route (optional)
+
+3) Add admin-only manual refresh endpoint
+   - POST /v1/connections/instagram/refresh?email=<e>  (ADMIN_TOKEN required)
+   - Calls refresh_instagram_token(user_id)
+   - Returns { "refreshed": true, "new_expiry": <date> }
+
+4) Add safety + logging
+   - Wrap API calls in try/except; if 400/401, return
+       {"detail": "Failed to exchange or refresh token", "error": str(e)}
+   - Log full HTTP status and URL for debugging.
+
+5) Verify with test flow
+   - Visit /v1/connections/instagram/init?email=<e>
+     → Consent screen → redirect to callback.
+   - Should now log:
+       [OAUTH] Received short-lived token
+       [OAUTH] Exchanged for long-lived token (60d)
+   - GET /v1/connections/status?email=<e>
+     should show Instagram provider with expires_at ≈ 60 days from now.
+
+6) Bonus: integrate refresh into scheduler
+   - Before nightly IG sync:
+       call refresh_instagram_token(user_id)
+       then run run_instagram_sync(user_id, days=1)
+   - This ensures tokens never expire automatically.

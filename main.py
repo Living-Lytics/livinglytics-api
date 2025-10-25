@@ -1999,66 +1999,89 @@ def instagram_oauth_callback(code: str, state: str, db: Session = Depends(get_db
         logging.error(f"[OAUTH] User not found during Instagram callback: {email}")
         raise HTTPException(status_code=404, detail=f"User not found: {email}")
     
-    # Exchange code for short-lived token
-    token_url = "https://api.instagram.com/oauth/access_token"
-    token_data = {
+    # Step 1: Exchange code for short-lived user access token via Facebook Graph API
+    token_url = "https://graph.facebook.com/v19.0/oauth/access_token"
+    token_params = {
         "client_id": META_APP_ID,
         "client_secret": META_APP_SECRET,
-        "grant_type": "authorization_code",
         "redirect_uri": META_OAUTH_REDIRECT,
         "code": code
     }
     
     try:
-        token_response = requests.post(token_url, data=token_data, timeout=10)
+        logging.info(f"[OAUTH] Exchanging code for short-lived token: POST {token_url}")
+        token_response = requests.post(token_url, params=token_params, timeout=10)
+        logging.info(f"[OAUTH] Token exchange response status: {token_response.status_code}")
         token_response.raise_for_status()
         short_lived_data = token_response.json()
+        logging.info(f"[OAUTH] Received short-lived token for user={email}")
     except requests.RequestException as e:
-        logging.error(f"[OAUTH] Instagram token exchange failed for user={email}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to exchange code for tokens: {str(e)}")
+        error_detail = f"Status: {getattr(e.response, 'status_code', 'N/A')}, URL: {token_url}"
+        logging.error(f"[OAUTH] Instagram token exchange failed for user={email}: {e}, {error_detail}")
+        if hasattr(e.response, 'text'):
+            logging.error(f"[OAUTH] Response body: {e.response.text}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Failed to exchange code for token: {str(e)}"
+        )
     
     short_lived_token = short_lived_data.get("access_token")
-    ig_user_id = short_lived_data.get("user_id")
     
-    if not short_lived_token or not ig_user_id:
-        raise HTTPException(status_code=500, detail="No access token or user_id received from Instagram")
+    if not short_lived_token:
+        logging.error(f"[OAUTH] No access_token in response: {short_lived_data}")
+        raise HTTPException(status_code=500, detail="No access token received from Facebook")
     
-    # Exchange short-lived token for long-lived token (60 days)
-    long_lived_url = "https://graph.instagram.com/access_token"
+    # Step 2: Exchange short-lived token for long-lived token (60 days)
+    long_lived_url = "https://graph.facebook.com/v19.0/oauth/access_token"
     long_lived_params = {
-        "grant_type": "ig_exchange_token",
+        "grant_type": "fb_exchange_token",
+        "client_id": META_APP_ID,
         "client_secret": META_APP_SECRET,
-        "access_token": short_lived_token
+        "fb_exchange_token": short_lived_token
     }
     
     try:
+        logging.info(f"[OAUTH] Exchanging for long-lived token: GET {long_lived_url}")
         long_lived_response = requests.get(long_lived_url, params=long_lived_params, timeout=10)
+        logging.info(f"[OAUTH] Long-lived token response status: {long_lived_response.status_code}")
         long_lived_response.raise_for_status()
         long_lived_data = long_lived_response.json()
+        logging.info(f"[OAUTH] Exchanged for long-lived token (60d) for user={email}")
     except requests.RequestException as e:
-        logging.error(f"[OAUTH] Instagram long-lived token exchange failed: {e}")
-        raise HTTPException(status_code=500, detail="Failed to get long-lived token")
+        error_detail = f"Status: {getattr(e.response, 'status_code', 'N/A')}, URL: {long_lived_url}"
+        logging.error(f"[OAUTH] Long-lived token exchange failed for user={email}: {e}, {error_detail}")
+        if hasattr(e.response, 'text'):
+            logging.error(f"[OAUTH] Response body: {e.response.text}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Failed to exchange for long-lived token: {str(e)}"
+        )
     
     access_token = long_lived_data.get("access_token")
     expires_in = long_lived_data.get("expires_in", 5184000)  # 60 days default
     
     if not access_token:
+        logging.error(f"[OAUTH] No long-lived access_token in response: {long_lived_data}")
         raise HTTPException(status_code=500, detail="No long-lived access token received")
     
     # Calculate expiration timestamp
     expires_at = datetime.now() + timedelta(seconds=expires_in)
+    logging.info(f"[OAUTH] Token expires in {expires_in}s ({expires_in/86400:.1f} days), expires_at={expires_at.isoformat()}")
     
-    # Get Instagram username
+    # Get Instagram username and user ID using the access token
     username = None
+    ig_user_id = None
     try:
-        user_info_url = f"https://graph.instagram.com/me?fields=username&access_token={access_token}"
+        user_info_url = f"https://graph.instagram.com/me?fields=id,username&access_token={access_token}"
         user_info_response = requests.get(user_info_url, timeout=10)
         user_info_response.raise_for_status()
         user_info = user_info_response.json()
+        ig_user_id = user_info.get("id")
         username = user_info.get("username", ig_user_id)
+        logging.info(f"[OAUTH] Retrieved Instagram user: {username} (ID: {ig_user_id})")
     except Exception as e:
-        logging.warning(f"[OAUTH] Failed to fetch Instagram username: {e}")
-        username = ig_user_id
+        logging.error(f"[OAUTH] Failed to fetch Instagram user info: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve Instagram user info: {str(e)}")
     
     # Check for existing Instagram metrics BEFORE creating/updating data source
     existing_metrics_count = db.execute(
@@ -2134,51 +2157,61 @@ def instagram_oauth_callback(code: str, state: str, db: Session = Depends(get_db
 def refresh_instagram_token(data_source: DataSource, db: Session) -> str:
     """
     Refresh Instagram long-lived token if expiring within 7 days.
+    Uses Facebook Graph API to exchange current token for a new 60-day token.
     Returns valid access token.
     """
-    if not META_APP_SECRET:
+    if not META_APP_ID or not META_APP_SECRET:
         raise HTTPException(status_code=500, detail="Instagram OAuth not configured")
     
     # Check if token expires within 7 days
     now = datetime.now()
     if data_source.expires_at and data_source.expires_at > now + timedelta(days=7):
-        # Token still valid
+        # Token still valid for more than 7 days
+        logging.info(f"[OAUTH] Token still valid until {data_source.expires_at.isoformat()}, skip refresh")
         return data_source.access_token
     
-    logging.info(f"[OAUTH] Refreshing Instagram token for user_id={data_source.user_id}")
+    logging.info(f"[OAUTH] Refreshing Instagram token for user_id={data_source.user_id}, expires_at={data_source.expires_at}")
     
-    # Refresh long-lived token (extends by 60 days)
-    refresh_url = "https://graph.instagram.com/refresh_access_token"
+    # Exchange current long-lived token for new long-lived token via Facebook Graph API
+    refresh_url = "https://graph.facebook.com/v19.0/oauth/access_token"
     params = {
-        "grant_type": "ig_refresh_token",
-        "access_token": data_source.access_token
+        "grant_type": "fb_exchange_token",
+        "client_id": META_APP_ID,
+        "client_secret": META_APP_SECRET,
+        "fb_exchange_token": data_source.access_token
     }
     
     try:
+        logging.info(f"[OAUTH] Requesting token refresh: GET {refresh_url}")
         response = requests.get(refresh_url, params=params, timeout=10)
+        logging.info(f"[OAUTH] Token refresh response status: {response.status_code}")
         response.raise_for_status()
         tokens = response.json()
     except requests.RequestException as e:
-        logging.error(f"[OAUTH] Instagram token refresh failed: {e}")
+        error_detail = f"Status: {getattr(e.response, 'status_code', 'N/A')}, URL: {refresh_url}"
+        logging.error(f"[OAUTH] Instagram token refresh failed: {e}, {error_detail}")
+        if hasattr(e.response, 'text'):
+            logging.error(f"[OAUTH] Response body: {e.response.text}")
         raise HTTPException(
             status_code=401,
-            detail="Failed to refresh Instagram token. Please reconnect your account."
+            detail=f"Failed to refresh Instagram token: {str(e)}"
         )
     
     new_access_token = tokens.get("access_token")
-    expires_in = tokens.get("expires_in", 5184000)
+    expires_in = tokens.get("expires_in", 5184000)  # 60 days default
     
     if not new_access_token:
+        logging.error(f"[OAUTH] No access_token in refresh response: {tokens}")
         raise HTTPException(status_code=500, detail="No access token in refresh response")
     
-    # Update data source
+    # Update data source with new token
     data_source.access_token = new_access_token
     data_source.expires_at = now + timedelta(seconds=expires_in)
     data_source.updated_at = now
     
     db.commit()
     
-    logging.info(f"[OAUTH] Instagram token refreshed successfully for user_id={data_source.user_id}")
+    logging.info(f"[OAUTH] Refreshed long-lived IG token for user_id={data_source.user_id}, new expires_at={data_source.expires_at.isoformat()}")
     
     return new_access_token
 
