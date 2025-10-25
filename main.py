@@ -2154,6 +2154,52 @@ def instagram_oauth_callback(code: str, state: str, db: Session = Depends(get_db
         "backfill_started": backfill_started
     }
 
+@app.post("/v1/connections/instagram/refresh", include_in_schema=False)
+def instagram_token_refresh_admin(
+    email: str,
+    authorization: str = Header(...),
+    db: Session = Depends(get_db)
+):
+    """
+    Manually refresh Instagram long-lived token for a user.
+    Requires ADMIN_TOKEN. Hidden from OpenAPI schema.
+    """
+    # Verify admin token
+    token = authorization.replace("Bearer ", "")
+    if token != ADMIN_TOKEN:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    # Find user
+    user = db.execute(
+        select(User).where(User.email == email)
+    ).scalar_one_or_none()
+    
+    if not user:
+        raise HTTPException(status_code=404, detail=f"User not found: {email}")
+    
+    # Find Instagram data source
+    ig_source = db.execute(
+        select(DataSource).where(
+            DataSource.user_id == user.id,
+            DataSource.source_name == "instagram"
+        )
+    ).scalar_one_or_none()
+    
+    if not ig_source:
+        raise HTTPException(status_code=404, detail=f"No Instagram connection found for user: {email}")
+    
+    # Refresh token
+    try:
+        new_token = refresh_instagram_token(ig_source, db)
+        return {
+            "refreshed": True,
+            "email": email,
+            "new_expiry": ig_source.expires_at.isoformat()
+        }
+    except Exception as e:
+        logging.error(f"[OAUTH] Manual token refresh failed for user={email}: {e}")
+        raise
+
 def refresh_instagram_token(data_source: DataSource, db: Session) -> str:
     """
     Refresh Instagram long-lived token if expiring within 7 days.
