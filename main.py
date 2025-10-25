@@ -59,17 +59,29 @@ APP_NAME = os.getenv("APP_NAME", "Living Lytics API")
 API_KEY = os.getenv("FASTAPI_SECRET_KEY")
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN")
 
-# Instagram OAuth configuration
-INSTAGRAM_APP_ID = os.getenv("INSTAGRAM_APP_ID")
-INSTAGRAM_APP_SECRET = os.getenv("INSTAGRAM_APP_SECRET")
-INSTAGRAM_REDIRECT_URI = os.getenv("INSTAGRAM_REDIRECT_URI")
+# Instagram OAuth configuration (via Meta/Facebook)
+META_APP_ID = os.getenv("META_APP_ID")
+META_APP_SECRET = os.getenv("META_APP_SECRET")
+META_OAUTH_REDIRECT = os.getenv("META_OAUTH_REDIRECT")
 
 if not API_KEY:
     raise RuntimeError("FASTAPI_SECRET_KEY not set")
 if not ADMIN_TOKEN:
     logging.warning("⚠️  ADMIN_TOKEN not set - admin endpoints will be inaccessible")
-if not INSTAGRAM_APP_ID or not INSTAGRAM_APP_SECRET:
-    logging.warning("⚠️  Instagram OAuth not configured - Instagram integration will be unavailable")
+
+# Validate Instagram OAuth configuration
+missing_meta_keys = []
+if not META_APP_ID:
+    missing_meta_keys.append("META_APP_ID")
+if not META_APP_SECRET:
+    missing_meta_keys.append("META_APP_SECRET")
+if not META_OAUTH_REDIRECT:
+    missing_meta_keys.append("META_OAUTH_REDIRECT")
+
+if missing_meta_keys:
+    logging.warning(f"[OAUTH-CONFIG] Missing Instagram OAuth secrets: {', '.join(missing_meta_keys)} - Instagram integration will be unavailable")
+else:
+    logging.info(f"[OAUTH-CONFIG] Instagram OAuth configured with redirect: {META_OAUTH_REDIRECT}")
 
 app = FastAPI(title=APP_NAME)
 
@@ -1898,8 +1910,20 @@ def instagram_oauth_init(email: str, db: Session = Depends(get_db)):
     Initiate Instagram OAuth flow.
     Redirects user to Instagram authorization with CSRF protection.
     """
-    if not INSTAGRAM_APP_ID or not INSTAGRAM_REDIRECT_URI:
-        raise HTTPException(status_code=500, detail="Instagram OAuth not configured")
+    # Check configuration
+    missing_keys = []
+    if not META_APP_ID:
+        missing_keys.append("META_APP_ID")
+    if not META_APP_SECRET:
+        missing_keys.append("META_APP_SECRET")
+    if not META_OAUTH_REDIRECT:
+        missing_keys.append("META_OAUTH_REDIRECT")
+    
+    if missing_keys:
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Instagram OAuth not configured: missing {', '.join(missing_keys)}"
+        )
     
     # Verify user exists
     user_result = db.execute(
@@ -1912,16 +1936,16 @@ def instagram_oauth_init(email: str, db: Session = Depends(get_db)):
     # Generate secure state token
     state_token = generate_oauth_state(email)
     
-    # Build Instagram OAuth URL
+    # Build Facebook OAuth URL (Instagram uses Facebook OAuth)
     oauth_params = {
-        "client_id": INSTAGRAM_APP_ID,
-        "redirect_uri": INSTAGRAM_REDIRECT_URI,
-        "scope": "user_profile,user_media,instagram_basic,instagram_manage_insights",
+        "client_id": META_APP_ID,
+        "redirect_uri": META_OAUTH_REDIRECT,
+        "scope": "instagram_basic,instagram_manage_insights,pages_show_list,pages_read_engagement",
         "response_type": "code",
         "state": state_token
     }
     
-    auth_url = f"https://api.instagram.com/oauth/authorize?{urlencode(oauth_params)}"
+    auth_url = f"https://www.facebook.com/v19.0/dialog/oauth?{urlencode(oauth_params)}"
     
     logging.info(f"[OAUTH] Initiating Instagram OAuth for user={email}")
     
@@ -1933,7 +1957,7 @@ def instagram_oauth_callback(code: str, state: str, db: Session = Depends(get_db
     Handle Instagram OAuth callback with CSRF protection.
     Exchanges short-lived code for long-lived token and triggers 30-day backfill.
     """
-    if not INSTAGRAM_APP_ID or not INSTAGRAM_APP_SECRET or not INSTAGRAM_REDIRECT_URI:
+    if not META_APP_ID or not META_APP_SECRET or not META_OAUTH_REDIRECT:
         raise HTTPException(status_code=500, detail="Instagram OAuth not configured")
     
     # Verify state token (CSRF protection)
@@ -1957,10 +1981,10 @@ def instagram_oauth_callback(code: str, state: str, db: Session = Depends(get_db
     # Exchange code for short-lived token
     token_url = "https://api.instagram.com/oauth/access_token"
     token_data = {
-        "client_id": INSTAGRAM_APP_ID,
-        "client_secret": INSTAGRAM_APP_SECRET,
+        "client_id": META_APP_ID,
+        "client_secret": META_APP_SECRET,
         "grant_type": "authorization_code",
-        "redirect_uri": INSTAGRAM_REDIRECT_URI,
+        "redirect_uri": META_OAUTH_REDIRECT,
         "code": code
     }
     
@@ -1982,7 +2006,7 @@ def instagram_oauth_callback(code: str, state: str, db: Session = Depends(get_db
     long_lived_url = "https://graph.instagram.com/access_token"
     long_lived_params = {
         "grant_type": "ig_exchange_token",
-        "client_secret": INSTAGRAM_APP_SECRET,
+        "client_secret": META_APP_SECRET,
         "access_token": short_lived_token
     }
     
@@ -2091,7 +2115,7 @@ def refresh_instagram_token(data_source: DataSource, db: Session) -> str:
     Refresh Instagram long-lived token if expiring within 7 days.
     Returns valid access token.
     """
-    if not INSTAGRAM_APP_SECRET:
+    if not META_APP_SECRET:
         raise HTTPException(status_code=500, detail="Instagram OAuth not configured")
     
     # Check if token expires within 7 days
