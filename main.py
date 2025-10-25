@@ -87,6 +87,7 @@ app = FastAPI(title=APP_NAME)
 
 ALLOW_ORIGINS = [
     "https://livinglytics.base44.app",
+    "https://preview--livinglytics.base44.app",  # Base44 preview domain
     "https://livinglytics.com",
     "http://localhost:5173",
 ]

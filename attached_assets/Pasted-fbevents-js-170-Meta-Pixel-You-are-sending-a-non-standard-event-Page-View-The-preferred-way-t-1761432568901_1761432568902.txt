@@ -1,0 +1,18 @@
+fbevents.js:170 [Meta Pixel] - You are sending a non-standard event 'Page View'. The preferred way to send these events is using trackCustom. See 'https://developers.facebook.com/docs/ads-for-websites/pixel-events/#events' for more information.
+vendors.4784dbb1.js:1 Unrecognized feature: 'vr'.
+vendors.4784dbb1.js:1 Unrecognized feature: 'ambient-light-sensor'.
+vendors.4784dbb1.js:1 Unrecognized feature: 'battery'.
+(index):64 cdn.tailwindcss.com should not be used in production. To use Tailwind CSS in production, install it as a PostCSS plugin or use the Tailwind CLI: https://tailwindcss.com/docs/installation
+preview--livinglytic…s?hide_badge=true:1 Access to fetch at 'https://api.livinglytics.com/v1/connections/status?email=marable.marcel%40gmail.com&provider=instagram' from origin 'https://preview--livinglytics.base44.app' has been blocked by CORS policy: Response to preflight request doesn't pass access control check: No 'Access-Control-Allow-Origin' header is present on the requested resource.
+VM26:111 
+ GET https://api.livinglytics.com/v1/connections/status?email=marable.marcel%40gmail.com&provider=instagram net::ERR_FAILED
+preview--livinglytic…s?hide_badge=true:1 Access to fetch at 'https://api.livinglytics.com/v1/connections/google/status?email=marable.marcel%40gmail.com' from origin 'https://preview--livinglytics.base44.app' has been blocked by CORS policy: Response to preflight request doesn't pass access control check: No 'Access-Control-Allow-Origin' header is present on the requested resource.
+VM26:85 
+ GET https://api.livinglytics.com/v1/connections/google/status?email=marable.marcel%40gmail.com net::ERR_FAILED
+preview--livinglytic…s?hide_badge=true:1 Access to fetch at 'https://api.livinglytics.com/v1/connections/google/status?email=marable.marcel%40gmail.com' from origin 'https://preview--livinglytics.base44.app' has been blocked by CORS policy: Response to preflight request doesn't pass access control check: No 'Access-Control-Allow-Origin' header is present on the requested resource.
+
+VM26:85 
+ GET https://api.livinglytics.com/v1/connections/google/status?email=marable.marcel%40gmail.com net::ERR_FAILED
+preview--livinglytic…s?hide_badge=true:1 Access to fetch at 'https://api.livinglytics.com/v1/connections/status?email=marable.marcel%40gmail.com&provider=instagram' from origin 'https://preview--livinglytics.base44.app' has been blocked by CORS policy: Response to preflight request doesn't pass access control check: No 'Access-Control-Allow-Origin' header is present on the requested resource.
+VM26:111 
+ GET https://api.livinglytics.com/v1/connections/status?email=marable.marcel%40gmail.com&provider=instagram net::ERR_FAILED
