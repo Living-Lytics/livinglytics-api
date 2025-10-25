@@ -12,7 +12,7 @@ from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import Dict, Any, Optional, List
 from collections import defaultdict
-from fastapi import FastAPI, Depends, HTTPException, Header, Body, Request, Response
+from fastapi import FastAPI, Depends, HTTPException, Header, Body, Request, Response, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from urllib.parse import urlencode
@@ -1458,6 +1458,96 @@ def system_status(db: Session = Depends(get_db)):
         "version": version
     }
 
+@app.get("/v1/debug/google-check", tags=["debug"])
+def debug_google_check(email: str = Query(..., min_length=3), db: Session = Depends(get_db)):
+    """
+    Check if a user has a Google Analytics connection configured.
+    Returns connection status and token expiration.
+    No authentication required - read-only debug endpoint.
+    """
+    try:
+        user = db.execute(
+            select(User).where(func.lower(User.email) == func.lower(email))
+        ).scalar_one_or_none()
+        
+        if not user:
+            return {
+                "connected": False,
+                "provider": "google",
+                "email": email,
+                "expires_at": None
+            }
+        
+        google_source = db.execute(
+            select(DataSource).where(
+                DataSource.user_id == user.id,
+                DataSource.source_name == "google"
+            ).order_by(DataSource.id.desc())
+        ).scalars().first()
+        
+        if not google_source:
+            return {
+                "connected": False,
+                "provider": "google",
+                "email": email,
+                "expires_at": None
+            }
+        
+        return {
+            "connected": True,
+            "provider": "google",
+            "email": email,
+            "expires_at": google_source.expires_at.isoformat() if google_source.expires_at else None
+        }
+    except Exception as e:
+        logging.error(f"[DEBUG] google-check failed: {e}")
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+@app.get("/v1/debug/facebook-check", tags=["debug"])
+def debug_facebook_check(email: str = Query(..., min_length=3), db: Session = Depends(get_db)):
+    """
+    Check if a user has a Facebook/Instagram connection configured.
+    Returns connection status and token expiration.
+    No authentication required - read-only debug endpoint.
+    """
+    try:
+        user = db.execute(
+            select(User).where(func.lower(User.email) == func.lower(email))
+        ).scalar_one_or_none()
+        
+        if not user:
+            return {
+                "connected": False,
+                "provider": "facebook",
+                "email": email,
+                "expires_at": None
+            }
+        
+        instagram_source = db.execute(
+            select(DataSource).where(
+                DataSource.user_id == user.id,
+                DataSource.source_name == "instagram"
+            ).order_by(DataSource.id.desc())
+        ).scalars().first()
+        
+        if not instagram_source:
+            return {
+                "connected": False,
+                "provider": "facebook",
+                "email": email,
+                "expires_at": None
+            }
+        
+        return {
+            "connected": True,
+            "provider": "facebook",
+            "email": email,
+            "expires_at": instagram_source.expires_at.isoformat() if instagram_source.expires_at else None
+        }
+    except Exception as e:
+        logging.error(f"[DEBUG] facebook-check failed: {e}")
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
 @app.get("/v1/debug/instagram-config", include_in_schema=False)
 def debug_instagram_config():
     """
@@ -1479,14 +1569,14 @@ def debug_instagram_config():
         "status": "ok" if all_configured else "missing"
     }
 
-@app.get("/v1/debug/facebook-check", include_in_schema=False)
-def debug_facebook_check(
+@app.get("/v1/debug/facebook-inspect", include_in_schema=False)
+def debug_facebook_inspect(
     email: str,
     authorization: str = Header(...),
     db: Session = Depends(get_db)
 ):
     """
-    Diagnostic endpoint to inspect Facebook Pages, permissions, and Instagram links.
+    Admin diagnostic endpoint to inspect Facebook Pages, permissions, and Instagram links.
     Requires ADMIN_TOKEN. Hidden from OpenAPI schema.
     """
     # Verify admin token

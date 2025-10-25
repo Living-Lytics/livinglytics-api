@@ -1,0 +1,127 @@
+Goal
+Add read-only debug endpoints to our FastAPI backend to verify OAuth connections. Implement:
+
+GET /v1/debug/google-check?email=<email>
+
+GET /v1/debug/facebook-check?email=<email>
+
+Each endpoint should return JSON with:
+connected (bool), provider ("google" or "facebook"), email, and expires_at (ISO string or null). If no token is found, return {"connected": false, "provider": "...", "email": "<email>"} with HTTP 200.
+
+Project context
+
+App: FastAPI, running on Uvicorn.
+
+API prefix: /v1.
+
+DB: synchronous SQLAlchemy (not async).
+
+We persist OAuth tokens in a table similar to:
+
+oauth_tokens(id, provider, email, access_token, refresh_token, expires_at, created_at, updated_at)
+
+If a model/table already exists, reuse it. If not, create a simple SQLAlchemy model and Base.metadata.create_all(bind=engine) where appropriate.
+
+We’ve seen 404s on a previous path; ensure the exact routes below exist and appear in /docs.
+
+Exact tasks
+
+Locate app entry (likely main.py) and the router using prefix /v1. If none, create APIRouter(prefix="/v1", tags=["debug"]).
+
+DB session dependency
+Use the existing sync SQLAlchemy session factory (e.g., SessionLocal). Provide a get_db() dependency.
+
+Model
+
+If a model exists (e.g., OAuthToken), use it.
+
+Otherwise, define:
+
+class OAuthToken(Base):
+    __tablename__ = "oauth_tokens"
+    id = Column(Integer, primary_key=True, index=True)
+    provider = Column(String(50), index=True, nullable=False)   # "google" | "facebook"
+    email = Column(String(320), index=True, nullable=False)
+    access_token = Column(Text, nullable=True)
+    refresh_token = Column(Text, nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    __table_args__ = (Index("ix_tokens_provider_email", "provider", "email", unique=False),)
+
+
+Ensure tables are created on startup if they don’t exist.
+
+Endpoints
+
+@router.get("/debug/google-check")
+def google_check(email: str = Query(..., min_length=3), db: Session = Depends(get_db)):
+    token = (db.query(OAuthToken)
+               .filter(OAuthToken.provider == "google", func.lower(OAuthToken.email) == func.lower(email))
+               .order_by(OAuthToken.id.desc())
+               .first())
+    if not token:
+        return {"connected": False, "provider": "google", "email": email, "expires_at": None}
+    return {
+        "connected": True,
+        "provider": "google",
+        "email": email,
+        "expires_at": token.expires_at.isoformat() if token.expires_at else None,
+    }
+
+@router.get("/debug/facebook-check")
+def facebook_check(email: str = Query(..., min_length=3), db: Session = Depends(get_db)):
+    token = (db.query(OAuthToken)
+               .filter(OAuthToken.provider == "facebook", func.lower(OAuthToken.email) == func.lower(email))
+               .order_by(OAuthToken.id.desc())
+               .first())
+    if not token:
+        return {"connected": False, "provider": "facebook", "email": email, "expires_at": None}
+    return {
+        "connected": True,
+        "provider": "facebook",
+        "email": email,
+        "expires_at": token.expires_at.isoformat() if token.expires_at else None,
+    }
+
+
+Ensure these are mounted under the /v1 prefix so the final paths are:
+
+/v1/debug/google-check
+
+/v1/debug/facebook-check
+
+Do not require Authorization for these debug endpoints. They’re read-only.
+
+OpenAPI docs
+
+Confirm both endpoints show up in /docs. Tag them as "debug".
+
+Error handling
+
+Return HTTP 200 with connected: false when no token row exists (don’t 404).
+
+If the database is unreachable, return HTTP 503 with a short message.
+
+Trailing slash
+
+Define routes without trailing slashes. FastAPI will handle redirects; but test both with/without trailing slash.
+
+Acceptance tests (run after code change)
+
+GET https://api.livinglytics.com/v1/debug/google-check?email=marable.marcel@gmail.com → returns JSON with connected and expires_at.
+
+GET https://api.livinglytics.com/v1/debug/facebook-check?email=marable.marcel@gmail.com → similar shape.
+
+Both endpoints visible in /docs under the “debug” tag.
+
+Nice to have (if quick)
+
+Add GET /v1/health/liveness (200 JSON {"status":"ok"}) if missing.
+
+Add CORS allowlist using our app domain(s).
+
+When done, show the diff of changed files and paste the two full curl commands I can run to verify:
+
+curl "https://api.livinglytics.com/v1/debug/google-check?email=marable.marcel@gmail.com"
+curl "https://api.livinglytics.com/v1/debug/facebook-check?email=marable.marcel@gmail.com"
