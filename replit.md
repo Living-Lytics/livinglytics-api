@@ -1,7 +1,7 @@
 # Living Lytics API
 
 ## Overview
-Living Lytics API is a production-ready analytics engine and data integration platform built with FastAPI. It connects to a Supabase PostgreSQL database for robust data management, supporting data ingestion, aggregation for dashboards, and integrations with external services like GitHub and Google Analytics 4. The API powers analytics across various data sources, offering insights, reporting capabilities, and secure operations with CORS configuration and comprehensive logging.
+Living Lytics API is a production-ready analytics engine and data integration platform built with FastAPI. It connects to a Supabase PostgreSQL database for robust data management, supporting data ingestion, aggregation for dashboards, and integrations with external services like GitHub, Google Analytics 4, and Instagram. The API powers analytics across various data sources, offering insights, reporting capabilities, automatic token refresh for long-lived OAuth connections, and secure operations with CORS configuration and comprehensive logging.
 
 ## User Preferences
 - Using Supabase for PostgreSQL database (not Replit DB)
@@ -11,8 +11,10 @@ Living Lytics API is a production-ready analytics engine and data integration pl
 - Idempotent schema management approach
 - GitHub integration via Replit connector for automatic OAuth management
 - **Google OAuth integration** for GA4 analytics with automatic 30-day backfill
-- **Instagram OAuth integration** for reach/engagement metrics with automatic 30-day backfill
+- **Instagram OAuth integration** via Facebook Graph API for reach/engagement metrics with automatic 30-day backfill
 - **Meta/Facebook OAuth** environment variables (META_APP_ID, META_APP_SECRET, META_OAUTH_REDIRECT) for Instagram Graph API integration
+- **Automatic token refresh** for Instagram long-lived tokens (60 days) when expiring within 7 days
+- **Admin manual token refresh** endpoint for Instagram connections
 - Public-only data exposure for GitHub endpoints (private repos filtered)
 - **Structured logging** with user_id, period, and status for digest operations
 - **Cache-Control headers** on timeline endpoint (5 minutes) for performance
@@ -33,7 +35,8 @@ The API provides endpoints for:
 - **GitHub Integration**: Authenticated user and public repository information.
 - **Google OAuth / GA4 Integration**: OAuth flow initiation and callback, connection status, listing GA4 properties, and saving selected GA4 properties.
 - **GA4 Data Sync**: Auto-backfill (30 days) on first property save. Admin-protected endpoint to manually trigger GA4 data synchronization.
-- **Instagram OAuth Integration**: OAuth flow initiation and callback with automatic long-lived token exchange (60 days).
+- **Instagram OAuth Integration**: OAuth flow initiation via Facebook OAuth dialog and callback with automatic long-lived token exchange (60 days via Facebook Graph API).
+- **Instagram Token Refresh**: Automatic refresh when token expires within 7 days, admin-protected manual refresh endpoint.
 - **Instagram Data Sync**: Auto-backfill (30 days) on first connection for reach and engagement metrics. Admin-protected endpoint for manual sync.
 - **Email Digests**: Sending personalized weekly digests to users, admin-triggered scheduled runs, previewing digests, testing, status monitoring, scheduling info, and unsubscribe functionality.
 - **Webhooks**: Resend webhook event reception for email delivery monitoring.
