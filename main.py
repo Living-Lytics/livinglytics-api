@@ -8,6 +8,7 @@ import uuid
 import time
 import random
 import threading
+from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import Dict, Any, Optional, List
@@ -83,14 +84,21 @@ if missing_meta_keys:
 else:
     logging.info(f"[OAUTH-CONFIG] Instagram OAuth configured with redirect: {META_OAUTH_REDIRECT}")
 
-app = FastAPI(title=APP_NAME)
+# CORS configuration - allow override via environment variable for deployment
+ALLOW_ORIGINS_ENV = os.getenv("ALLOW_ORIGINS")
+if ALLOW_ORIGINS_ENV:
+    ALLOW_ORIGINS = [origin.strip() for origin in ALLOW_ORIGINS_ENV.split(",")]
+    logging.info(f"[CORS] Using ALLOW_ORIGINS from environment: {ALLOW_ORIGINS}")
+else:
+    ALLOW_ORIGINS = [
+        "https://livinglytics.base44.app",
+        "https://preview--livinglytics.base44.app",
+        "https://livinglytics.com",
+        "http://localhost:5173",
+    ]
+    logging.info(f"[CORS] Using default ALLOW_ORIGINS: {ALLOW_ORIGINS}")
 
-ALLOW_ORIGINS = [
-    "https://livinglytics.base44.app",
-    "https://preview--livinglytics.base44.app",  # Base44 preview domain
-    "https://livinglytics.com",
-    "http://localhost:5173",
-]
+app = FastAPI(title=APP_NAME, lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -156,14 +164,15 @@ def scheduled_digest_job():
     finally:
         db.close()
 
-@app.on_event("startup")
-def on_startup():
-    """Initialize database tables, indexes, constraints, and start scheduler on startup."""
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan context manager for startup and shutdown events."""
+    # Startup
+    logging.info("[LIFESPAN] Starting application initialization")
+    
     # Create ga4_properties table
     try:
-        # Import here to ensure all models are loaded
         from models import GA4Property
-        # Create ga4_properties table
         Base.metadata.create_all(bind=engine, tables=[GA4Property.__table__], checkfirst=True)
         logging.info("[STARTUP] GA4 properties table created/verified")
     except Exception as e:
@@ -172,7 +181,6 @@ def on_startup():
     # Create indexes
     try:
         with engine.connect() as conn:
-            # Create unique index on provider_id for idempotent webhook processing
             conn.execute(text("""
                 CREATE UNIQUE INDEX IF NOT EXISTS email_events_provider_unique 
                 ON email_events(provider_id)
@@ -184,7 +192,6 @@ def on_startup():
     
     # Start scheduler
     try:
-        # Schedule weekly digest: Every Monday at 07:00 PT
         scheduler.add_job(
             scheduled_digest_job,
             CronTrigger(day_of_week='mon', hour=7, minute=0, timezone=PT),
@@ -196,15 +203,20 @@ def on_startup():
         logging.info("[SCHEDULER] Started with weekly digest job (Monday 07:00 PT)")
     except Exception as e:
         logging.error(f"[SCHEDULER] Failed to start: {str(e)}")
-
-@app.on_event("shutdown")
-def on_shutdown():
-    """Shut down scheduler gracefully."""
+    
+    logging.info("[LIFESPAN] Application startup complete")
+    
+    yield
+    
+    # Shutdown
+    logging.info("[LIFESPAN] Starting graceful shutdown")
     try:
         scheduler.shutdown()
         logging.info("[SCHEDULER] Shut down successfully")
     except Exception as e:
         logging.error(f"[SCHEDULER] Error during shutdown: {str(e)}")
+    
+    logging.info("[LIFESPAN] Application shutdown complete")
 
 def require_api_key(authorization: str = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):
