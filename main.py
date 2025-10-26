@@ -98,26 +98,6 @@ else:
     ]
     logging.info(f"[CORS] Using default ALLOW_ORIGINS: {ALLOW_ORIGINS}")
 
-app = FastAPI(title=APP_NAME, lifespan=lifespan)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=ALLOW_ORIGINS,
-    allow_credentials=False,
-    allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type"],
-)
-
-# Request ID middleware for structured logging
-@app.middleware("http")
-async def add_request_id(request: Request, call_next):
-    """Add request_id to all requests for tracing."""
-    request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
-    request.state.request_id = request_id
-    response = await call_next(request)
-    response.headers["X-Request-ID"] = request_id
-    return response
-
 # Simple in-memory rate limiter for admin endpoints (thread-safe)
 class InMemoryRateLimiter:
     """Thread-safe token bucket rate limiter for admin endpoints."""
@@ -217,6 +197,28 @@ async def lifespan(app: FastAPI):
         logging.error(f"[SCHEDULER] Error during shutdown: {str(e)}")
     
     logging.info("[LIFESPAN] Application shutdown complete")
+
+# Initialize FastAPI with lifespan
+app = FastAPI(title=APP_NAME, lifespan=lifespan)
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOW_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
+)
+
+# Request ID middleware for structured logging
+@app.middleware("http")
+async def add_request_id(request: Request, call_next):
+    """Add request_id to all requests for tracing."""
+    request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
+    request.state.request_id = request_id
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    return response
 
 def require_api_key(authorization: str = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):
