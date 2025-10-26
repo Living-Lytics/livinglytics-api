@@ -285,19 +285,54 @@ def get_github_client():
 
 @app.get("/", include_in_schema=False)
 def root():
-    return {"message": "Living Lytics API", "docs": "/docs"}
+    """Root health check endpoint for deployment verification."""
+    return {
+        "status": "ok",
+        "message": "Living Lytics API",
+        "docs": "/docs",
+        "health": "/health"
+    }
 
-@app.get("/v1/health/liveness")
-def liveness():
+@app.get("/health", include_in_schema=False)
+def health():
+    """Root-level health check for deployment (liveness probe)."""
     return {"status": "ok"}
 
-@app.get("/v1/health/readiness")
-def readiness():
+@app.get("/ready", include_in_schema=False)
+def ready():
+    """Root-level readiness check for deployment."""
     try:
         with engine.begin() as conn:
             conn.execute(text("select 1"))
         db_ready = True
-    except Exception:
+    except Exception as e:
+        logging.warning(f"[READINESS] Database check failed: {e}")
+        db_ready = False
+    
+    env_ready = bool(
+        API_KEY and 
+        (os.getenv("SUPABASE_CONNECTION_POOLER_URL") or os.getenv("DATABASE_URL")) and 
+        os.getenv("SUPABASE_PROJECT_URL") and 
+        os.getenv("SUPABASE_ANON_KEY")
+    )
+    
+    ready = db_ready and env_ready
+    return {"ready": ready, "database": db_ready, "environment": env_ready}
+
+@app.get("/v1/health/liveness")
+def liveness():
+    """Liveness probe for Kubernetes/container orchestration."""
+    return {"status": "ok"}
+
+@app.get("/v1/health/readiness")
+def readiness():
+    """Readiness probe for Kubernetes/container orchestration."""
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("select 1"))
+        db_ready = True
+    except Exception as e:
+        logging.warning(f"[READINESS] Database check failed: {e}")
         db_ready = False
     
     env_ready = bool(
