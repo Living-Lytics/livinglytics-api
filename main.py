@@ -8,7 +8,6 @@ import uuid
 import time
 import random
 import threading
-from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import Dict, Any, Optional, List
@@ -84,19 +83,32 @@ if missing_meta_keys:
 else:
     logging.info(f"[OAUTH-CONFIG] Instagram OAuth configured with redirect: {META_OAUTH_REDIRECT}")
 
-# CORS configuration - allow override via environment variable for deployment
-ALLOW_ORIGINS_ENV = os.getenv("ALLOW_ORIGINS")
-if ALLOW_ORIGINS_ENV:
-    ALLOW_ORIGINS = [origin.strip() for origin in ALLOW_ORIGINS_ENV.split(",")]
-    logging.info(f"[CORS] Using ALLOW_ORIGINS from environment: {ALLOW_ORIGINS}")
-else:
-    ALLOW_ORIGINS = [
-        "https://livinglytics.base44.app",
-        "https://preview--livinglytics.base44.app",
-        "https://livinglytics.com",
-        "http://localhost:5173",
-    ]
-    logging.info(f"[CORS] Using default ALLOW_ORIGINS: {ALLOW_ORIGINS}")
+app = FastAPI(title=APP_NAME)
+
+ALLOW_ORIGINS = [
+    "https://livinglytics.base44.app",
+    "https://preview--livinglytics.base44.app",  # Base44 preview domain
+    "https://livinglytics.com",
+    "http://localhost:5173",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOW_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
+)
+
+# Request ID middleware for structured logging
+@app.middleware("http")
+async def add_request_id(request: Request, call_next):
+    """Add request_id to all requests for tracing."""
+    request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
+    request.state.request_id = request_id
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    return response
 
 # Simple in-memory rate limiter for admin endpoints (thread-safe)
 class InMemoryRateLimiter:
@@ -144,15 +156,14 @@ def scheduled_digest_job():
     finally:
         db.close()
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Lifespan context manager for startup and shutdown events."""
-    # Startup
-    logging.info("[LIFESPAN] Starting application initialization")
-    
+@app.on_event("startup")
+def on_startup():
+    """Initialize database tables, indexes, constraints, and start scheduler on startup."""
     # Create ga4_properties table
     try:
+        # Import here to ensure all models are loaded
         from models import GA4Property
+        # Create ga4_properties table
         Base.metadata.create_all(bind=engine, tables=[GA4Property.__table__], checkfirst=True)
         logging.info("[STARTUP] GA4 properties table created/verified")
     except Exception as e:
@@ -161,6 +172,7 @@ async def lifespan(app: FastAPI):
     # Create indexes
     try:
         with engine.connect() as conn:
+            # Create unique index on provider_id for idempotent webhook processing
             conn.execute(text("""
                 CREATE UNIQUE INDEX IF NOT EXISTS email_events_provider_unique 
                 ON email_events(provider_id)
@@ -172,6 +184,7 @@ async def lifespan(app: FastAPI):
     
     # Start scheduler
     try:
+        # Schedule weekly digest: Every Monday at 07:00 PT
         scheduler.add_job(
             scheduled_digest_job,
             CronTrigger(day_of_week='mon', hour=7, minute=0, timezone=PT),
@@ -183,42 +196,15 @@ async def lifespan(app: FastAPI):
         logging.info("[SCHEDULER] Started with weekly digest job (Monday 07:00 PT)")
     except Exception as e:
         logging.error(f"[SCHEDULER] Failed to start: {str(e)}")
-    
-    logging.info("[LIFESPAN] Application startup complete")
-    
-    yield
-    
-    # Shutdown
-    logging.info("[LIFESPAN] Starting graceful shutdown")
+
+@app.on_event("shutdown")
+def on_shutdown():
+    """Shut down scheduler gracefully."""
     try:
         scheduler.shutdown()
         logging.info("[SCHEDULER] Shut down successfully")
     except Exception as e:
         logging.error(f"[SCHEDULER] Error during shutdown: {str(e)}")
-    
-    logging.info("[LIFESPAN] Application shutdown complete")
-
-# Initialize FastAPI with lifespan
-app = FastAPI(title=APP_NAME, lifespan=lifespan)
-
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=ALLOW_ORIGINS,
-    allow_credentials=False,
-    allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type"],
-)
-
-# Request ID middleware for structured logging
-@app.middleware("http")
-async def add_request_id(request: Request, call_next):
-    """Add request_id to all requests for tracing."""
-    request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
-    request.state.request_id = request_id
-    response = await call_next(request)
-    response.headers["X-Request-ID"] = request_id
-    return response
 
 def require_api_key(authorization: str = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):
@@ -287,54 +273,19 @@ def get_github_client():
 
 @app.get("/", include_in_schema=False)
 def root():
-    """Root health check endpoint for deployment verification."""
-    return {
-        "status": "ok",
-        "message": "Living Lytics API",
-        "docs": "/docs",
-        "health": "/health"
-    }
-
-@app.get("/health", include_in_schema=False)
-def health():
-    """Root-level health check for deployment (liveness probe)."""
-    return {"status": "ok"}
-
-@app.get("/ready", include_in_schema=False)
-def ready():
-    """Root-level readiness check for deployment."""
-    try:
-        with engine.begin() as conn:
-            conn.execute(text("select 1"))
-        db_ready = True
-    except Exception as e:
-        logging.warning(f"[READINESS] Database check failed: {e}")
-        db_ready = False
-    
-    env_ready = bool(
-        API_KEY and 
-        (os.getenv("SUPABASE_CONNECTION_POOLER_URL") or os.getenv("DATABASE_URL")) and 
-        os.getenv("SUPABASE_PROJECT_URL") and 
-        os.getenv("SUPABASE_ANON_KEY")
-    )
-    
-    ready = db_ready and env_ready
-    return {"ready": ready, "database": db_ready, "environment": env_ready}
+    return {"message": "Living Lytics API", "docs": "/docs"}
 
 @app.get("/v1/health/liveness")
 def liveness():
-    """Liveness probe for Kubernetes/container orchestration."""
     return {"status": "ok"}
 
 @app.get("/v1/health/readiness")
 def readiness():
-    """Readiness probe for Kubernetes/container orchestration."""
     try:
         with engine.begin() as conn:
             conn.execute(text("select 1"))
         db_ready = True
-    except Exception as e:
-        logging.warning(f"[READINESS] Database check failed: {e}")
+    except Exception:
         db_ready = False
     
     env_ready = bool(

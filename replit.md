@@ -1,11 +1,7 @@
-# Living Lytics
+# Living Lytics API
 
 ## Overview
-Living Lytics is a full-stack analytics platform consisting of:
-1. **Backend API** (FastAPI) - Production-ready analytics engine and data integration service
-2. **Frontend Dashboard** (React + Vite) - Interactive dashboard for visualizing analytics data
-
-The backend connects to a Supabase PostgreSQL database for robust data management, supporting data ingestion, aggregation for dashboards, and integrations with external services like GitHub, Google Analytics 4, and Instagram. The frontend provides an intuitive interface for managing data connections, viewing KPIs, and accessing insights.
+Living Lytics API is a production-ready analytics engine and data integration platform built with FastAPI. It connects to a Supabase PostgreSQL database for robust data management, supporting data ingestion, aggregation for dashboards, and integrations with external services like GitHub, Google Analytics 4, and Instagram. The API powers analytics across various data sources, offering insights, reporting capabilities, automatic token refresh for long-lived OAuth connections, and secure operations with CORS configuration and comprehensive logging.
 
 ## User Preferences
 - Using Supabase for PostgreSQL database (not Replit DB)
@@ -52,39 +48,7 @@ The API provides endpoints for:
 Standard endpoints use Bearer token authentication with `FASTAPI_SECRET_KEY`. Admin endpoints require a separate `ADMIN_TOKEN` and are hidden from the OpenAPI schema.
 
 ### Configuration
-The backend API runs on `0.0.0.0:8000`. The frontend runs on `0.0.0.0:5000` with Vite dev server proxying API requests to port 8000. CORS is restricted to `livinglytics.base44.app`, `preview--livinglytics.base44.app`, `livinglytics.com`, and `localhost:5173` by default, with optional `ALLOW_ORIGINS` environment variable override for deployment flexibility. Environment variables manage database connections, Supabase keys, FastAPI secrets, Resend API keys, and Google OAuth credentials. Structured JSON logging is implemented with optional Sentry integration and thread-safe in-memory rate limiting for admin endpoints.
-
-### Deployment & Lifespan Management
-The API uses FastAPI's modern lifespan context manager pattern for proper startup and shutdown handling, ensuring the application stays alive during autoscale deployment. Health check endpoints are available at multiple levels:
-- `/` - Root endpoint with API info and status (returns 200 OK)
-- `/health` - Liveness probe for deployment health checks
-- `/ready` - Readiness probe with database and environment validation
-- `/v1/health/liveness` and `/v1/health/readiness` - Kubernetes-style probes
-
-The lifespan manager handles:
-- Database table creation and index setup on startup
-- APScheduler initialization for weekly digest jobs
-- Graceful scheduler shutdown
-- Error logging for all startup/shutdown operations
-
-## Frontend Architecture
-
-### Tech Stack
-The frontend is built with React 19 and TypeScript, using Vite 7 for fast development and building. It uses React Router 7 for client-side routing, Zustand for state management, Axios for API communication, TailwindCSS v4 for styling, and Recharts for data visualization.
-
-### Pages and Features
-- **Dashboard**: KPI tiles showing GA4 sessions, conversions, Instagram reach, and engagement. Timeline visualizations for combined metrics.
-- **Connections**: OAuth integration cards for Google Analytics 4 and Instagram Business with connection status indicators.
-- **Settings**: Organization name management and account disconnection functionality.
-- **OAuth Callbacks**: Automatic handling of Google and Instagram OAuth redirects.
-
-### Development Workflows
-Two workflows run simultaneously in Replit:
-1. **Backend API** (port 8000): `uvicorn main:app --host 0.0.0.0 --port 8000 --reload`
-2. **Frontend** (port 5000): `cd client && npm run dev` (Vite proxies `/v1`, `/health`, `/ready` to port 8000)
-
-### Deployment
-The frontend is designed to be deployed separately to Base44 (livinglytics.com) while the backend runs at api.livinglytics.com. See `client/README.md` for detailed deployment instructions.
+The application runs on `0.0.0.0:5000`. CORS is restricted to `livinglytics.base44.app`, `livinglytics.com`, and `localhost:5173`. Environment variables manage database connections, Supabase keys, FastAPI secrets, Resend API keys, and Google OAuth credentials. Structured JSON logging is implemented with optional Sentry integration and thread-safe in-memory rate limiting for admin endpoints.
 
 ## External Dependencies
 - **Supabase PostgreSQL**: Primary database.
