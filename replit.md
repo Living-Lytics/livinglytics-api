@@ -22,8 +22,19 @@ Living Lytics API is a production-ready analytics engine and data integration pl
 
 ## System Architecture
 
+### Deployment Architecture
+The project consists of two services running simultaneously:
+- **Marketing Site** (Vite + React): Runs on port 5000 (webview output for Replit preview)
+- **Backend API** (FastAPI): Runs on port 8080 (console output)
+
+The marketing site uses a Vite proxy to forward `/api/*` requests to the backend API on port 8080, avoiding CORS issues during development. Configuration:
+- `.env.local`: `VITE_API_BASE=/api`, `VITE_API_HEALTH=/v1/health/liveness`
+- `vite.config.js`: Proxy rewrites `/api` → `http://localhost:8080`
+
 ### Tech Stack
 The API is built with Python 3.11 and FastAPI. It uses SQLAlchemy 2.x with psycopg 3.x for PostgreSQL connectivity, Pydantic for data validation, PyGithub and Replit GitHub Connector for GitHub integration, and httpx for Resend API integration.
+
+The marketing site is built with Vite, React, and Tailwind CSS. It includes pages for features, pricing, integrations, case studies, and contact information.
 
 ### Database Schema
 A PostgreSQL database stores user information, data source connections (including OAuth tokens), selected GA4 properties, collected metric data, email delivery events, and weekly digest run logs. Row-Level Security (RLS) is enabled on all tables with a default-deny policy.
@@ -48,7 +59,7 @@ The API provides endpoints for:
 Standard endpoints use Bearer token authentication with `FASTAPI_SECRET_KEY`. Admin endpoints require a separate `ADMIN_TOKEN` and are hidden from the OpenAPI schema.
 
 ### Configuration
-The application runs on `0.0.0.0:5000`. CORS is restricted to `livinglytics.base44.app`, `livinglytics.com`, and `localhost:5173`. Environment variables manage database connections, Supabase keys, FastAPI secrets, Resend API keys, and Google OAuth credentials. Structured JSON logging is implemented with optional Sentry integration and thread-safe in-memory rate limiting for admin endpoints.
+The backend API runs on `0.0.0.0:8080`. The marketing site runs on `0.0.0.0:5000` (Replit webview port). CORS is restricted to `livinglytics.base44.app`, `preview--livinglytics.base44.app`, `livinglytics.com`, and `localhost:5173`. Environment variables manage database connections, Supabase keys, FastAPI secrets, Resend API keys, and Google OAuth credentials. Structured JSON logging is implemented with optional Sentry integration and thread-safe in-memory rate limiting for admin endpoints.
 
 ## External Dependencies
 - **Supabase PostgreSQL**: Primary database.

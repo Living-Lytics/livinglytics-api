@@ -9,7 +9,14 @@ export default defineConfig({
   server: {
     host: '0.0.0.0',
     port: 5000,  // Replit requires port 5000 for webview
-    allowedHosts: true
+    allowedHosts: true,
+    proxy: {
+      '/api': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+        rewrite: p => p.replace(/^\/api/, ''),
+      },
+    },
   },
   resolve: {
     alias: {
