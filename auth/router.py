@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-from database import get_db
+from db import get_db
 from models import User, DataSource
 from auth.schemas import RegisterRequest, LoginRequest, AuthResponse, AuthStatusResponse
 from auth.security import hash_password, verify_password, create_access_token, get_current_user_email

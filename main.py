@@ -32,6 +32,7 @@ from scheduler_utils import (
     verify_unsubscribe_token,
     PT
 )
+from auth.router import router as auth_router
 
 # Configure structured logging with JSON format
 logging.basicConfig(
@@ -99,6 +100,9 @@ app.add_middleware(
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
 )
+
+# Mount auth router
+app.include_router(auth_router)
 
 # Request ID middleware for structured logging
 @app.middleware("http")
@@ -1864,6 +1868,7 @@ def digest_status(db: Session = Depends(get_db)):
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 GOOGLE_OAUTH_REDIRECT = os.getenv("GOOGLE_OAUTH_REDIRECT")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5000")
 
 # In-memory OAuth state storage (secure random nonce mapping)
 # Format: {state_token: {"email": email, "expires_at": timestamp}}
@@ -1964,10 +1969,7 @@ def google_oauth_callback(code: str, state: str, db: Session = Depends(get_db)):
     email = verify_oauth_state(state)
     if not email:
         logging.error(f"[OAUTH] Invalid or expired state token: {state[:16]}...")
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid or expired OAuth state. Please restart the connection flow."
-        )
+        return RedirectResponse(url=f"{FRONTEND_URL}/connect/callback?provider=google&status=error")
     
     # Verify user exists
     user_result = db.execute(
@@ -1976,7 +1978,7 @@ def google_oauth_callback(code: str, state: str, db: Session = Depends(get_db)):
     
     if not user_result:
         logging.error(f"[OAUTH] User not found during callback: {email}")
-        raise HTTPException(status_code=404, detail=f"User not found: {email}")
+        return RedirectResponse(url=f"{FRONTEND_URL}/connect/callback?provider=google&status=error")
     
     # Exchange code for tokens
     token_url = "https://oauth2.googleapis.com/token"
@@ -1994,7 +1996,7 @@ def google_oauth_callback(code: str, state: str, db: Session = Depends(get_db)):
         tokens = token_response.json()
     except requests.RequestException as e:
         logging.error(f"[OAUTH] Token exchange failed for user={email}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to exchange code for tokens: {str(e)}")
+        return RedirectResponse(url=f"{FRONTEND_URL}/connect/callback?provider=google&status=error")
     
     access_token = tokens.get("access_token")
     refresh_token = tokens.get("refresh_token")
@@ -2002,7 +2004,7 @@ def google_oauth_callback(code: str, state: str, db: Session = Depends(get_db)):
     scope = tokens.get("scope", "https://www.googleapis.com/auth/analytics.readonly")
     
     if not access_token:
-        raise HTTPException(status_code=500, detail="No access token received from Google")
+        return RedirectResponse(url=f"{FRONTEND_URL}/connect/callback?provider=google&status=error")
     
     # Calculate expiration timestamp
     expires_at = datetime.now() + timedelta(seconds=expires_in)
@@ -2041,14 +2043,9 @@ def google_oauth_callback(code: str, state: str, db: Session = Depends(get_db)):
     except Exception as e:
         db.rollback()
         logging.error(f"[OAUTH] Failed to save tokens for user={email}: {e}")
-        raise HTTPException(status_code=500, detail="Failed to save OAuth tokens")
+        return RedirectResponse(url=f"{FRONTEND_URL}/connect/callback?provider=google&status=error")
     
-    return {
-        "connected": True,
-        "provider": "google",
-        "email": email,
-        "expires_at": expires_at.isoformat()
-    }
+    return RedirectResponse(url=f"{FRONTEND_URL}/connect/callback?provider=google&status=success")
 
 def refresh_google_token(data_source: DataSource, db: Session) -> str:
     """
@@ -2173,10 +2170,7 @@ def instagram_oauth_callback(code: str, state: str, db: Session = Depends(get_db
     email = verify_oauth_state(state)
     if not email:
         logging.error(f"[OAUTH] Invalid or expired Instagram state token")
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid or expired OAuth state. Please restart the connection flow."
-        )
+        return RedirectResponse(url=f"{FRONTEND_URL}/connect/callback?provider=instagram&status=error")
     
     # Verify user exists
     user_result = db.execute(
@@ -2185,7 +2179,7 @@ def instagram_oauth_callback(code: str, state: str, db: Session = Depends(get_db
     
     if not user_result:
         logging.error(f"[OAUTH] User not found during Instagram callback: {email}")
-        raise HTTPException(status_code=404, detail=f"User not found: {email}")
+        return RedirectResponse(url=f"{FRONTEND_URL}/connect/callback?provider=instagram&status=error")
     
     # Step 1: Exchange code for short-lived user access token via Facebook Graph API
     token_url = "https://graph.facebook.com/v19.0/oauth/access_token"
@@ -2390,7 +2384,7 @@ def instagram_oauth_callback(code: str, state: str, db: Session = Depends(get_db
     except Exception as e:
         db.rollback()
         logging.error(f"[OAUTH] Failed to save Instagram tokens for user={email}: {e}")
-        raise HTTPException(status_code=500, detail="Failed to save OAuth tokens")
+        return RedirectResponse(url=f"{FRONTEND_URL}/connect/callback?provider=instagram&status=error")
     
     # Trigger 30-day backfill if this is first connection
     backfill_started = False
@@ -2408,14 +2402,7 @@ def instagram_oauth_callback(code: str, state: str, db: Session = Depends(get_db
     else:
         logging.info(f"[SYNC] IG backfill skipped for user={email} (existing_metrics_count={existing_metrics_count})")
     
-    return {
-        "connected": True,
-        "provider": "instagram",
-        "username": username,
-        "ig_user_id": ig_user_id,
-        "expires_at": expires_at.isoformat(),
-        "backfill_started": backfill_started
-    }
+    return RedirectResponse(url=f"{FRONTEND_URL}/connect/callback?provider=instagram&status=success")
 
 @app.post("/v1/connections/instagram/refresh", include_in_schema=False)
 def instagram_token_refresh_admin(
