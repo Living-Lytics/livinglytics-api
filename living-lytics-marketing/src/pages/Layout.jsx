@@ -27,6 +27,7 @@ export default function Layout({ children, currentPageName }) {
     { name: 'Integrations', path: 'Integrations' },
     { name: 'Pricing', path: 'Pricing' },
     { name: 'Case Studies', path: 'CaseStudies' },
+    { name: 'Connect', path: 'Connect' },
     { name: 'Resources', path: 'Resources' },
   ];
 

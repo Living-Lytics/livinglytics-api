@@ -1,0 +1,109 @@
+I’m in the living-lytics-marketing project. The Vite proxy is already set up to forward /api/* → http://localhost:8080.
+Implement a “Connect Accounts” flow for Google Analytics (GA4) and Instagram Business with proper redirects back to the app and a simple “connected” status view.
+
+Requirements
+
+Env + API client
+
+Ensure .env.local contains:
+
+VITE_API_BASE=/api
+VITE_API_HEALTH=/v1/health/liveness
+VITE_API_AUTH_STATUS=/v1/auth/status
+VITE_API_GOOGLE_START=/v1/auth/google/start
+VITE_API_INSTAGRAM_START=/v1/auth/instagram/start
+
+
+(Don’t add secrets; just these public paths.)
+
+Create/extend src/lib/api.ts with:
+
+const API = import.meta.env.VITE_API_BASE || '/api'
+
+export async function getAuthStatus() → GET ${API}${import.meta.env.VITE_API_AUTH_STATUS} returning { google?: {...}, instagram?: {...} }. If 404, return {} gracefully.
+
+export function startGoogleConnect(redirectTo?: string) → window.location.href = \${API}${import.meta.env.VITE_API_GOOGLE_START}?redirect_uri=${encodeURIComponent(redirectTo || window.location.origin + '/connect/callback')}``
+
+export function startInstagramConnect(redirectTo?: string) → similar to above using VITE_API_INSTAGRAM_START.
+
+Routes & pages
+
+Add a route /connect (new file src/pages/Connect.tsx) that:
+
+Shows two cards: Connect Google Analytics and Connect Instagram Business.
+
+Each card has a “Connect” button that calls startGoogleConnect() or startInstagramConnect().
+
+Also fetches getAuthStatus() on mount and shows badges:
+
+If connected: “Connected ✓ (email or account name if provided, else ‘Active’)”
+
+If not: “Not Connected”
+
+Provide loading and error states.
+
+Add a route /connect/callback (new file src/pages/ConnectCallback.tsx) that:
+
+On mount:
+
+Reads any ?provider=google|instagram&status=success|error&message=... query params (handle both presence and absence—the backend may just redirect back with no params).
+
+Calls getAuthStatus() to refresh connection state.
+
+Shows a short success or error message and a “Back to Connect” button linking to /connect.
+
+Navigation
+
+Add a “Connect” item in the site’s main nav that routes to /connect.
+
+UI polish
+
+Use existing design system (Tailwind + shadcn/ui) for cards/buttons/badges.
+
+Keep components minimal:
+
+ConnectedBadge (green) / DisconnectedBadge (gray).
+
+Handle errors with a small alert at the top of the page (no external libs).
+
+Resilience
+
+If getAuthStatus() 404s or returns non-JSON, don’t crash—treat as “not connected”.
+
+If the backend expects a different param than redirect_uri, still include redirect_uri and leave a note in code: “Adjust query param name if backend differs.”
+
+Dev test steps (automate & print)
+
+Restart dev server if needed: npm run dev.
+
+Print the local preview URL and the two full start URLs you’ll navigate to when clicking the buttons (so I can verify).
+
+Validate that clicking Connect Google or Connect Instagram navigates the browser to ${API}/v1/auth/.../start?redirect_uri=<encoded>.
+
+Validate that after returning to /connect/callback the page shows a status message and /connect reflects updated status (if backend is wired).
+
+Files to create/update
+
+.env.local (ensure the added lines above exist)
+
+src/lib/api.ts (add the functions)
+
+src/pages/Connect.tsx (new)
+
+src/pages/ConnectCallback.tsx (new)
+
+src/router or wherever routes are declared (register /connect and /connect/callback)
+
+src/components/Badges.tsx (optional small badges component)
+
+Nav component to add “Connect” link
+
+When done, give me:
+
+The preview URL.
+
+A short summary of edits.
+
+The two start URLs that the buttons will hit.
+
+Any TODOs if my backend paths differ (I can tune env vars).
