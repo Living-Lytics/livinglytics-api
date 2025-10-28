@@ -1,0 +1,213 @@
+Verify Auth + Connections, Wire Disconnects, Prod Env, and Build
+
+Context
+
+Frontend: living-lytics-marketing (React + Vite + Tailwind), dev on port 5000.
+
+Backend API: FastAPI on port 8080, proxied at /api/*.
+
+Auth endpoints to use:
+
+POST /api/v1/auth/login (JSON: { email, password }, credentials: include)
+
+GET /api/v1/auth/status
+
+POST /api/v1/auth/google/disconnect
+
+POST /api/v1/auth/instagram/disconnect
+
+Recent work: /signin page + modal and CTA interceptor were just added.
+
+Goals
+
+Add a quick CLI test suite to verify auth + status via proxy.
+
+Ensure Connect page shows live status and disconnect buttons call real endpoints.
+
+Prepare production env file and confirm build passes.
+
+Add a lightweight “Dashboard (Coming Soon)” route to avoid dead links.
+
+Provide a concise test log in the repo so teammates can repeat checks.
+
+Tasks
+A) Add a small Node test script for auth/status (runs via npm)
+
+Create scripts/testAuth.mjs that:
+
+Accepts --email and --password args.
+
+Logs health via GET http://localhost:5000/api/v1/health/liveness.
+
+Attempts login via POST http://localhost:5000/api/v1/auth/login.
+
+Persists cookies and calls GET http://localhost:5000/api/v1/auth/status.
+
+Prints a compact summary: health code, login code, status JSON (truncated).
+
+Exits non-zero if any step fails.
+
+Add undici as a dev dependency (or use built-in fetch if Node 18+ is available).
+
+Update package.json with:
+
+"test:auth": "node scripts/testAuth.mjs --email $TEST_EMAIL --password $TEST_PASSWORD"
+
+B) Wire/verify Disconnect buttons on Connect page
+
+In src/lib/api.ts add:
+
+disconnectGoogle() → POST /api/v1/auth/google/disconnect with credentials:'include'.
+
+disconnectInstagram() → POST /api/v1/auth/instagram/disconnect with credentials:'include'.
+
+In src/pages/Connect.(tsx|jsx):
+
+Ensure both buttons call these functions with loading states.
+
+After success, refresh status by calling getAuthStatus() and update UI badges.
+
+Handle non-200 with a simple inline error message (no new libs).
+
+C) Add a minimal “Dashboard (Coming Soon)” route
+
+Create src/pages/Dashboard.tsx with a simple placeholder and a link back to /connect.
+
+Register route /dashboard in the router.
+
+Ensure any internal links that might point to /dashboard won’t 404.
+
+D) Production config + build
+
+Create living-lytics-marketing/.env.production with:
+
+VITE_API_BASE=https://api.livinglytics.com
+
+
+Confirm backend CORS allows:
+
+https://www.livinglytics.com
+
+The current Replit preview URL (for dev)
+(If CORS config is in the backend repo, open it and add these origins.)
+
+Run npm run build and ensure build passes without type/lint errors.
+
+Output dist/ build size summary to the console.
+
+E) Add a repeatable test log
+
+Create TESTLOG.md at the repo root with:
+
+Date/time.
+
+Commands used.
+
+Results (status codes and one-line notes).
+
+A short “How to repeat” section.
+
+Implementation details
+
+scripts/testAuth.mjs (suggested)
+
+Use undici or Node’s fetch if available.
+
+Maintain cookies between requests (simple cookie jar in memory).
+
+Truncate auth/status JSON to the keys: authenticated, email, and provider names.
+
+src/lib/api.ts (add)
+
+export async function disconnectGoogle() {
+  const res = await fetch(`${API_BASE}/v1/auth/google/disconnect`, {
+    method: 'POST',
+    credentials: 'include'
+  });
+  if (!res.ok) throw new Error('Google disconnect failed');
+}
+
+export async function disconnectInstagram() {
+  const res = await fetch(`${API_BASE}/v1/auth/instagram/disconnect`, {
+    method: 'POST',
+    credentials: 'include'
+  });
+  if (!res.ok) throw new Error('Instagram disconnect failed');
+}
+
+
+Connect page (update)
+
+Add local loading state per provider.
+
+On success → refresh status and update badges.
+
+On error → show a small red text line: “Disconnect failed. Try again.”
+
+Dashboard (placeholder)
+
+export default function Dashboard() {
+  return (
+    <div className="min-h-[60vh] flex items-center justify-center p-8">
+      <div className="max-w-lg text-center">
+        <h1 className="text-2xl font-semibold mb-2">Dashboard (Coming Soon)</h1>
+        <p className="text-gray-600 mb-6">We’re building your unified analytics view.</p>
+        <a href="/connect" className="inline-block rounded-lg bg-indigo-600 px-4 py-2 font-medium text-white">
+          Go to Connections
+        </a>
+      </div>
+    </div>
+  );
+}
+
+
+package.json (scripts)
+
+{
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview --host",
+    "test:auth": "node scripts/testAuth.mjs --email $TEST_EMAIL --password $TEST_PASSWORD"
+  }
+}
+
+Commands to run (have Replit AI run these)
+# from living-lytics-marketing
+npm i -D undici
+mkdir -p scripts
+# (create scripts/testAuth.mjs with cookie handling as described)
+# (update src/lib/api.ts and src/pages/Connect.*)
+# (add src/pages/Dashboard.tsx and router entry)
+echo "VITE_API_BASE=https://api.livinglytics.com" > .env.production
+npm run build
+
+
+Then:
+
+# Quick test with env vars (set a valid test user first)
+export TEST_EMAIL="test@example.com"
+export TEST_PASSWORD="Testpass123!"
+npm run test:auth
+
+Acceptance Criteria
+
+npm run test:auth prints:
+
+Health: 200
+
+Login: 200
+
+Status: { authenticated: true, email: "...", providers: ... } (truncated)
+
+Connect page:
+
+Clicking Disconnect (Google/Instagram) calls the right endpoint.
+
+Badges update correctly after disconnect (no page reload required).
+
+/dashboard route renders and does not 404.
+
+Production build completes with no errors.
+
+TESTLOG.md exists with results and repeat steps.
