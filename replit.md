@@ -6,15 +6,20 @@ Living Lytics API is a production-ready analytics engine and data integration pl
 ## User Preferences
 - Using Supabase for PostgreSQL database (not Replit DB)
 - **Direct connection preferred** over connection pooler (port 5432 vs 6543) to avoid pgBouncer prepared statement conflicts
+- **JWT-based authentication** with email/password registration and Google OAuth sign-in
+- **bcrypt 4.0.1** for password hashing (passlib compatibility, avoids 72-byte password limit issues)
+- **Proper HTTP status codes**: 400 for validation errors (duplicate email), 401 for authentication failures, 200 for success
+- **OAuth disconnection** actually deletes DataSource records to sever connections completely
 - Bearer token authentication for API security (FASTAPI_SECRET_KEY)
 - **Admin endpoints protected** with separate ADMIN_TOKEN for sensitive operations
-- Idempotent schema management approach
+- Idempotent schema management approach with startup migrations for adding columns
 - GitHub integration via Replit connector for automatic OAuth management
 - **Google OAuth integration** for GA4 analytics with automatic 30-day backfill
 - **Instagram OAuth integration** via Facebook Graph API for reach/engagement metrics with automatic 30-day backfill
 - **Meta/Facebook OAuth** environment variables (META_APP_ID, META_APP_SECRET, META_OAUTH_REDIRECT) for Instagram Graph API integration
 - **Automatic token refresh** for Instagram long-lived tokens (60 days) when expiring within 7 days
 - **Admin manual token refresh** endpoint for Instagram connections
+- **OAuth callbacks redirect** to frontend `/connect/callback?provider=X&status=success/error`
 - Public-only data exposure for GitHub endpoints (private repos filtered)
 - **Structured logging** with user_id, period, and status for digest operations
 - **Cache-Control headers** on timeline endpoint (5 minutes) for performance
@@ -42,6 +47,7 @@ A PostgreSQL database stores user information, data source connections (includin
 ### API Endpoints
 The API provides endpoints for:
 - **Health Checks**: Liveness and readiness probes.
+- **User Authentication**: Email/password registration and login with JWT tokens (POST /v1/auth/register, POST /v1/auth/login), authentication status endpoint (GET /v1/auth/status), Google OAuth sign-in flow (GET /v1/auth/google/start, GET /v1/auth/google/callback), and OAuth disconnect endpoints (POST /v1/auth/google/disconnect, POST /v1/auth/instagram/disconnect).
 - **Analytics**: Data ingestion, dashboard tile aggregation, and daily/hourly/monthly metric timelines.
 - **GitHub Integration**: Authenticated user and public repository information.
 - **Google OAuth / GA4 Integration**: OAuth flow initiation and callback, connection status, listing GA4 properties, and saving selected GA4 properties.
@@ -56,7 +62,17 @@ The API provides endpoints for:
 - **Development & Testing**: Admin-protected endpoints for seeding metric and email event data.
 
 ### Authentication
-Standard endpoints use Bearer token authentication with `FASTAPI_SECRET_KEY`. Admin endpoints require a separate `ADMIN_TOKEN` and are hidden from the OpenAPI schema.
+The API implements a comprehensive authentication system with multiple sign-in methods:
+- **Email/Password Authentication**: Users can register and log in with email and password. Passwords are hashed using bcrypt (version 4.0.1 for passlib compatibility). JWT tokens are issued with 30-day expiry, containing user email and user_id claims.
+- **Google OAuth Sign-In**: Users can authenticate using their Google account. The OAuth flow stores the `google_sub` (Google user ID) in the users table and creates a `google_analytics` DataSource record when connecting GA4.
+- **JWT Tokens**: All authenticated endpoints use Bearer token authentication with `FASTAPI_SECRET_KEY`. Tokens are validated on each request to extract user identity.
+- **HTTP Status Codes**: Authentication endpoints return proper HTTP status codes (400 for duplicate email, 401 for invalid credentials, 200 for success) to ensure correct frontend error handling.
+- **OAuth Disconnection**: Disconnect endpoints actually delete DataSource records and clear OAuth identifiers, properly severing connections.
+- **Admin Endpoints**: Sensitive admin endpoints require a separate `ADMIN_TOKEN` and are hidden from the OpenAPI schema.
+
+Database schema additions for authentication:
+- `users.password_hash`: TEXT column storing bcrypt-hashed passwords
+- `users.google_sub`: TEXT column storing Google OAuth user identifier (nullable)
 
 ### Configuration
 The backend API runs on `0.0.0.0:8080`. The marketing site runs on `0.0.0.0:5000` (Replit webview port). CORS is restricted to `livinglytics.base44.app`, `preview--livinglytics.base44.app`, `livinglytics.com`, and `localhost:5173`. Environment variables manage database connections, Supabase keys, FastAPI secrets, Resend API keys, and Google OAuth credentials. Structured JSON logging is implemented with optional Sentry integration and thread-safe in-memory rate limiting for admin endpoints.
@@ -71,3 +87,6 @@ The backend API runs on `0.0.0.0:8080`. The marketing site runs on `0.0.0.0:5000
 - **PyGithub**: Python GitHub API client.
 - **httpx**: HTTP client.
 - **email-validator**: Email validation.
+- **passlib + bcrypt 4.0.1**: Password hashing and verification.
+- **python-jose**: JWT token generation and validation.
+- **python-multipart**: Form data parsing for OAuth callbacks.
