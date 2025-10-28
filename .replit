@@ -1,4 +1,4 @@
-modules = ["python-3.11", "postgresql-16"]
+modules = ["nodejs-20", "postgresql-16", "python-3.11"]
 [agent]
 expertMode = true
 integrations = ["github:1.0.0"]
@@ -17,23 +17,43 @@ author = "agent"
 
 [[workflows.workflow.tasks]]
 task = "workflow.run"
+args = "Marketing Site"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
 args = "Backend API"
+
+[[workflows.workflow]]
+name = "Marketing Site"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "cd living-lytics-marketing && npm run dev -- --host 0.0.0.0 --port 5000"
+waitForPort = 5000
+
+[workflows.workflow.metadata]
+outputType = "webview"
 
 [[workflows.workflow]]
 name = "Backend API"
 author = "agent"
 
-[workflows.workflow.metadata]
-outputType = "webview"
-
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "uvicorn main:app --host 0.0.0.0 --port ${PORT:-5000} --reload"
-waitForPort = 5000
+args = "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080} --reload"
+waitForPort = 8080
+
+[workflows.workflow.metadata]
+outputType = "console"
 
 [[ports]]
 localPort = 5000
 externalPort = 80
+
+[[ports]]
+localPort = 8080
+externalPort = 8080
 
 [deployment]
 deploymentTarget = "autoscale"
