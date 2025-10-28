@@ -8,7 +8,7 @@ export default defineConfig({
   base: '/',  // Ensure base path is root
   server: {
     host: '0.0.0.0',
-    port: 5173,
+    port: 5000,  // Replit requires port 5000 for webview
     allowedHosts: true
   },
   resolve: {

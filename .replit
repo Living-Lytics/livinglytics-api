@@ -17,23 +17,11 @@ author = "agent"
 
 [[workflows.workflow.tasks]]
 task = "workflow.run"
-args = "Marketing Site"
+args = "Backend API"
 
 [[workflows.workflow.tasks]]
 task = "workflow.run"
-args = "Backend API"
-
-[[workflows.workflow]]
-name = "Marketing Site"
-author = "agent"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "cd living-lytics-marketing && npm run dev -- --host 0.0.0.0 --port 5000"
-waitForPort = 5000
-
-[workflows.workflow.metadata]
-outputType = "webview"
+args = "Marketing Site"
 
 [[workflows.workflow]]
 name = "Backend API"
@@ -47,17 +35,29 @@ waitForPort = 8080
 [workflows.workflow.metadata]
 outputType = "console"
 
+[[workflows.workflow]]
+name = "Marketing Site"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "cd living-lytics-marketing && npm run dev"
+waitForPort = 5000
+
+[workflows.workflow.metadata]
+outputType = "webview"
+
 [[ports]]
 localPort = 5000
 externalPort = 80
 
 [[ports]]
-localPort = 5173
-externalPort = 5173
-
-[[ports]]
 localPort = 8080
 externalPort = 8080
+
+[[ports]]
+localPort = 46001
+externalPort = 3000
 
 [deployment]
 deploymentTarget = "autoscale"
