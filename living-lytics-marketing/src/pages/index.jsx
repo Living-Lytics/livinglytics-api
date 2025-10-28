@@ -26,6 +26,8 @@ import ConnectCallback from "./ConnectCallback";
 
 import SignIn from "./SignIn";
 
+import Dashboard from "./Dashboard";
+
 import { BrowserRouter as Router, Route, Routes, useLocation } from 'react-router-dom';
 
 const PAGES = {
@@ -53,6 +55,8 @@ const PAGES = {
     Connect: Connect,
     
     SignIn: SignIn,
+    
+    Dashboard: Dashboard,
     
 }
 
@@ -106,6 +110,8 @@ function PagesContent() {
                 <Route path="/connect/callback" element={<ConnectCallback />} />
                 
                 <Route path="/signin" element={<SignIn />} />
+                
+                <Route path="/dashboard" element={<Dashboard />} />
                 
             </Routes>
         </Layout>
