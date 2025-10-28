@@ -63,7 +63,7 @@ export default function SignInModal() {
         </div>
 
         {/* Form */}
-        <SignInForm onSuccess={closeModal} onClose={closeModal} />
+        <SignInForm onSuccess={() => { closeModal(); window.location.href = '/connect'; }} onClose={closeModal} />
       </div>
     </div>
   );

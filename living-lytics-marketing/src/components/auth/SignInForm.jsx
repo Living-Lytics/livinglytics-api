@@ -1,5 +1,4 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { login, register, loginWithGoogle } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -11,7 +10,6 @@ import { useToast } from '@/components/ui/use-toast';
 import { Loader2, Mail, Lock } from 'lucide-react';
 
 export default function SignInForm({ onSuccess, onClose }) {
-  const navigate = useNavigate();
   const { toast } = useToast();
   const [activeTab, setActiveTab] = useState('signin');
   const [loading, setLoading] = useState(false);
@@ -57,9 +55,12 @@ export default function SignInForm({ onSuccess, onClose }) {
           description: result.message || 'Welcome back!',
         });
         
-        if (onSuccess) onSuccess();
         if (onClose) onClose();
-        navigate('/connect');
+        if (onSuccess) {
+          onSuccess();
+        } else {
+          window.location.href = '/connect';
+        }
       } else {
         setError(result.message || 'Invalid email or password');
         toast({
@@ -110,9 +111,12 @@ export default function SignInForm({ onSuccess, onClose }) {
           description: result.message || 'Your account has been created successfully!',
         });
         
-        if (onSuccess) onSuccess();
         if (onClose) onClose();
-        navigate('/connect');
+        if (onSuccess) {
+          onSuccess();
+        } else {
+          window.location.href = '/connect';
+        }
       } else {
         setError(result.message || 'Registration failed');
         toast({

@@ -1,11 +1,13 @@
 import React from 'react';
+import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
+import { getAuthStatus } from '@/lib/api';
 import SectionHeading from '../marketing/SectionHeading';
 import CTAButton from '../marketing/CTAButton';
-import { base44 } from '@/api/base44Client';
 import { Link2, Brain, Zap } from 'lucide-react';
 
 export default function SolutionSection() {
+  const navigate = useNavigate();
   const steps = [
     {
       icon: Link2,
@@ -27,8 +29,15 @@ export default function SolutionSection() {
     },
   ];
 
-  const handleConnect = () => {
-    base44.auth.redirectToLogin();
+  const handleConnect = async () => {
+    const status = await getAuthStatus();
+    const authenticated = !!(status && (status.google || status.instagram || status.authenticated));
+    
+    if (authenticated) {
+      navigate('/connect');
+    } else {
+      navigate('/signin');
+    }
   };
 
   return (

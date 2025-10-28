@@ -1,5 +1,7 @@
 
 import React from 'react';
+import { useNavigate } from 'react-router-dom';
+import { getAuthStatus } from '@/lib/api';
 import SectionHeading from '../components/marketing/SectionHeading';
 import CTAButton from '../components/marketing/CTAButton';
 import { createPageUrl } from '@/utils';
@@ -21,18 +23,17 @@ import {
 } from '@/components/ui/dialog';
 
 export default function Integrations() {
+  const navigate = useNavigate();
   const [selectedIntegration, setSelectedIntegration] = React.useState(null);
 
-  const handleConnect = () => {
-    // Assuming 'base44' is a globally available object or imported elsewhere.
-    // If it's not global, an import or context provider would be needed.
-    if (typeof window !== 'undefined' && window.base44 && window.base44.auth) {
-      window.base44.auth.redirectToLogin();
+  const handleConnect = async () => {
+    const status = await getAuthStatus();
+    const authenticated = !!(status && (status.google || status.instagram || status.authenticated));
+    
+    if (authenticated) {
+      navigate('/connect');
     } else {
-      console.error("base44.auth.redirectToLogin is not available. Please ensure base44 SDK is loaded.");
-      // Fallback or error handling if base44 is not defined
-      // For example, navigate to a default signup page if base44 is not available
-      // window.location.href = createPageUrl('SignUp'); 
+      navigate('/signin');
     }
   };
 

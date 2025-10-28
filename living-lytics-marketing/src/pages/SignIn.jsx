@@ -113,7 +113,7 @@ export default function SignIn() {
                 <p className="text-gray-600">Sign in or create your account to get started.</p>
               </div>
 
-              <SignInForm />
+              <SignInForm onSuccess={() => navigate('/connect')} />
             </div>
 
             <p className="text-center text-sm text-gray-500 mt-6">

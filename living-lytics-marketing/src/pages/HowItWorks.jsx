@@ -1,7 +1,8 @@
 
 import React from 'react';
+import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { base44 } from '@/api/base44Client';
+import { getAuthStatus } from '@/lib/api';
 import { createPageUrl } from '@/utils';
 import SectionHeading from '../components/marketing/SectionHeading';
 import CTAButton from '../components/marketing/CTAButton';
@@ -9,6 +10,18 @@ import { Plug, TrendingUp, Zap, Play, ArrowRight, LayoutDashboard, Sparkles, Git
 import { Link } from 'react-router-dom';
 
 export default function HowItWorks() {
+  const navigate = useNavigate();
+
+  const handleStartTrial = async () => {
+    const status = await getAuthStatus();
+    const authenticated = !!(status && (status.google || status.instagram || status.authenticated));
+    
+    if (authenticated) {
+      navigate('/connect');
+    } else {
+      navigate('/signin');
+    }
+  };
   return (
     <div className="bg-[#F8F9FB]">
       {/* Breadcrumbs */}
@@ -40,7 +53,7 @@ export default function HowItWorks() {
             </p>
             
             <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
-              <CTAButton onClick={() => base44.auth.redirectToLogin()}>
+              <CTAButton onClick={handleStartTrial}>
                 Get Started Free Trial
               </CTAButton>
               <CTAButton variant="secondary" icon={false}>
@@ -205,7 +218,7 @@ export default function HowItWorks() {
               Start your 14-day trial and see personalized insights for your business.
             </p>
             <CTAButton 
-              onClick={() => base44.auth.redirectToLogin()}
+              onClick={handleStartTrial}
               className="bg-white text-[#3C3CE0] hover:bg-white/90 border-0"
             >
               Start Free Trial

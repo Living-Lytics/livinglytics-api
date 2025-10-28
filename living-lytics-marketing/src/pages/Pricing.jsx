@@ -334,7 +334,7 @@ export default function Pricing() {
           </div>
 
           <div className="text-center mt-8">
-            <CTAButton onClick={() => base44.auth.redirectToLogin()}>
+            <CTAButton onClick={handleStartTrial}>
               Start My 14-Day Trial
             </CTAButton>
           </div>
@@ -382,7 +382,7 @@ export default function Pricing() {
               Get AI-Powered Insights Working for You Today
             </h2>
             <CTAButton 
-              onClick={() => base44.auth.redirectToLogin()}
+              onClick={handleStartTrial}
               className="bg-white text-[#3C3CE0] hover:bg-white/90 border-0"
             >
               Start Trial

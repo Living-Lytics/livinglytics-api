@@ -1,11 +1,13 @@
 import React from 'react';
+import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
+import { getAuthStatus } from '@/lib/api';
 import SectionHeading from '../marketing/SectionHeading';
 import TestimonialCard from '../marketing/TestimonialCard';
 import CTAButton from '../marketing/CTAButton';
-import { base44 } from '@/api/base44Client';
 
 export default function SocialProof() {
+  const navigate = useNavigate();
   const testimonials = [
     {
       quote: "Living Lytics helped us discover that our Instagram stories drive 3x more website traffic than feed posts. That single insight changed our content strategy.",
@@ -29,8 +31,15 @@ export default function SocialProof() {
 
   const logos = ['Company A', 'Company B', 'Company C', 'Company D', 'Company E'];
 
-  const handleStartAccount = () => {
-    base44.auth.redirectToLogin();
+  const handleStartAccount = async () => {
+    const status = await getAuthStatus();
+    const authenticated = !!(status && (status.google || status.instagram || status.authenticated));
+    
+    if (authenticated) {
+      navigate('/connect');
+    } else {
+      navigate('/signin');
+    }
   };
 
   return (

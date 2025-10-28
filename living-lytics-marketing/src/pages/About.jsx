@@ -1,11 +1,24 @@
 import React from 'react';
+import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { base44 } from '@/api/base44Client';
+import { getAuthStatus } from '@/lib/api';
 import SectionHeading from '../components/marketing/SectionHeading';
 import CTAButton from '../components/marketing/CTAButton';
 import { Lightbulb, Shield, Target } from 'lucide-react';
 
 export default function About() {
+  const navigate = useNavigate();
+
+  const handleStartTrial = async () => {
+    const status = await getAuthStatus();
+    const authenticated = !!(status && (status.google || status.instagram || status.authenticated));
+    
+    if (authenticated) {
+      navigate('/connect');
+    } else {
+      navigate('/signin');
+    }
+  };
   return (
     <div className="bg-[#F8F9FB]">
       {/* Hero Section */}
@@ -22,7 +35,7 @@ export default function About() {
             <p className="text-xl text-[#1E1E2F]/60 leading-relaxed mb-8">
               At Living Lytics, we believe data should do more than inform—it should inspire action.
             </p>
-            <CTAButton onClick={() => base44.auth.redirectToLogin()}>
+            <CTAButton onClick={handleStartTrial}>
               Get Started Free Trial
             </CTAButton>
           </motion.div>
@@ -198,7 +211,7 @@ export default function About() {
               Partner with us to turn information into action.
             </p>
             <CTAButton 
-              onClick={() => base44.auth.redirectToLogin()}
+              onClick={handleStartTrial}
               className="bg-white text-[#3C3CE0] hover:bg-white/90 border-0"
             >
               Start Your Trial

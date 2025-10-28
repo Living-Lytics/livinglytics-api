@@ -64,7 +64,7 @@ export default function Layout({ children, currentPageName }) {
     if (authenticated) {
       navigate('/connect');
     } else {
-      openSignInModal();
+      navigate('/signin');
     }
   };
 

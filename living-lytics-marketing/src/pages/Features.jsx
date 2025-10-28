@@ -1,5 +1,7 @@
 
 import React from 'react';
+import { useNavigate } from 'react-router-dom';
+import { getAuthStatus } from '@/lib/api';
 import SectionHeading from '../components/marketing/SectionHeading';
 import FeatureCard from '../components/marketing/FeatureCard';
 import CTAButton from '../components/marketing/CTAButton';
@@ -16,6 +18,7 @@ import {
 } from 'lucide-react';
 
 export default function Features() {
+  const navigate = useNavigate();
   const mainFeatures = [
     {
       icon: LayoutDashboard,
@@ -64,15 +67,14 @@ export default function Features() {
     },
   ];
 
-  const handleStartTrial = () => {
-    // Assuming 'base44' is a globally available object or imported elsewhere
-    // that handles authentication redirects.
-    if (typeof base44 !== 'undefined' && base44.auth && base44.auth.redirectToLogin) {
-      base44.auth.redirectToLogin();
+  const handleStartTrial = async () => {
+    const status = await getAuthStatus();
+    const authenticated = !!(status && (status.google || status.instagram || status.authenticated));
+    
+    if (authenticated) {
+      navigate('/connect');
     } else {
-      console.warn("base44.auth.redirectToLogin is not available. Please ensure base44 SDK is initialized.");
-      // Fallback or navigate to a default signup page if base44 is not configured
-      // For example: window.location.href = '/signup';
+      navigate('/signin');
     }
   };
 
