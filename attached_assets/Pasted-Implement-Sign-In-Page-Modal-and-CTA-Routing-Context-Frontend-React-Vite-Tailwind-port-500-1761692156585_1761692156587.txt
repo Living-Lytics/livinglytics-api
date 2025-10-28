@@ -1,0 +1,362 @@
+Implement Sign-In Page + Modal and CTA Routing
+
+Context
+
+Frontend: React + Vite + Tailwind (port 5000)
+
+Backend API proxied at /api (port 8080)
+
+Endpoints used now:
+
+POST /api/v1/auth/login (body: { email, password }, credentials included)
+
+GET /api/v1/auth/google/start?redirect_uri=<url>
+
+GET /api/v1/auth/status
+
+After successful login or Google OAuth callback, navigate to /connect.
+
+Keep code simple: no new libraries. Use Tailwind and plain React.
+
+Need both a /signin page and a modal that can open from any CTA.
+
+Intercept these CTA labels when user is unauthenticated and open the Sign-In modal (else navigate to /connect):
+
+“Sign In”, “Get Started Free”, “Start Your Free Account”, “Start Free Trial”, “Get Started Free Trial”, “Connect Your First Source”
+
+Tasks
+
+Create src/lib/api.ts (or update if exists) with minimal auth helpers.
+
+Create src/hooks/useSignInModal.ts (global modal store via context).
+
+Create src/components/auth/SignInModal.tsx.
+
+Create src/pages/SignIn.tsx.
+
+Update router in src/App.tsx (or wherever routes live): add /signin, mount global modal provider, and a global click interceptor for CTAs.
+
+Ensure all fetches include credentials: 'include'.
+
+On success: redirect to /connect. On error: show inline error (no external toast lib).
+
+Implement exactly this code:
+
+src/lib/api.ts
+
+export const API_BASE = import.meta.env.VITE_API_BASE ?? '/api';
+
+type LoginReq = { email: string; password: string };
+type StatusRes = {
+  authenticated?: boolean;
+  email?: string | null;
+  providers?: Record<string, { connected: boolean; email?: string | null }>;
+};
+
+export async function login(data: LoginReq) {
+  const res = await fetch(`${API_BASE}/v1/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    const msg = await safeMsg(res);
+    throw new Error(msg || 'Unable to sign in.');
+  }
+  return res.json();
+}
+
+export function googleStartRedirect() {
+  const origin = window.location.origin;
+  const redirect = encodeURIComponent(`${origin}/connect/callback?provider=google&status=success`);
+  window.location.href = `${API_BASE}/v1/auth/google/start?redirect_uri=${redirect}`;
+}
+
+export async function getAuthStatus(): Promise<StatusRes> {
+  const res = await fetch(`${API_BASE}/v1/auth/status`, { credentials: 'include' });
+  if (!res.ok) return { authenticated: false };
+  return res.json();
+}
+
+async function safeMsg(res: Response) {
+  try {
+    const t = await res.text();
+    if (!t) return '';
+    try { const j = JSON.parse(t); return j.detail || j.message || t; } catch { return t; }
+  } catch { return ''; }
+}
+
+
+src/hooks/useSignInModal.tsx
+
+import React, { createContext, useContext, useState, useCallback } from 'react';
+
+type Ctx = { open: boolean; openModal: () => void; closeModal: () => void; };
+const SignInModalCtx = createContext<Ctx | null>(null);
+
+export function SignInModalProvider({ children }: { children: React.ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const openModal = useCallback(() => setOpen(true), []);
+  const closeModal = useCallback(() => setOpen(false), []);
+  return (
+    <SignInModalCtx.Provider value={{ open, openModal, closeModal }}>
+      {children}
+    </SignInModalCtx.Provider>
+  );
+}
+
+export function useSignInModal() {
+  const ctx = useContext(SignInModalCtx);
+  if (!ctx) throw new Error('useSignInModal must be used within SignInModalProvider');
+  return ctx;
+}
+
+
+src/components/auth/SignInModal.tsx
+
+import React, { useState } from 'react';
+import { login, googleStartRedirect } from '../../lib/api';
+import { useSignInModal } from '../../hooks/useSignInModal';
+
+export default function SignInModal() {
+  const { open, closeModal } = useSignInModal();
+  const [tab, setTab] = useState<'signin' | 'create'>('signin'); // create tab is visual only for now
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [err, setErr] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  if (!open) return null;
+
+  const onSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErr('');
+    setLoading(true);
+    try {
+      await login({ email, password });
+      closeModal();
+      window.location.assign('/connect');
+    } catch (e: any) {
+      setErr(e?.message || 'Sign in failed.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" aria-modal="true" role="dialog">
+      <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-xl font-semibold">Welcome back</h2>
+          <button onClick={closeModal} className="rounded-full p-2 hover:bg-gray-100" aria-label="Close">✕</button>
+        </div>
+
+        <div className="mb-4 grid grid-cols-2 rounded-lg bg-gray-100 p-1 text-sm">
+          <button
+            onClick={() => setTab('signin')}
+            className={`py-2 rounded-md ${tab==='signin' ? 'bg-white shadow font-medium' : 'text-gray-600'}`}
+          >
+            Sign In
+          </button>
+          <button
+            onClick={() => setTab('create')}
+            className={`py-2 rounded-md ${tab==='create' ? 'bg-white shadow font-medium' : 'text-gray-600'}`}
+          >
+            Create Account
+          </button>
+        </div>
+
+        <form onSubmit={onSubmit} className="space-y-3">
+          <label className="block">
+            <span className="text-sm text-gray-700">Email</span>
+            <input
+              type="email"
+              className="mt-1 w-full rounded-lg border border-gray-300 p-2 outline-none focus:ring-2 focus:ring-indigo-500"
+              value={email}
+              onChange={(e)=>setEmail(e.target.value)}
+              required
+              autoComplete="email"
+            />
+          </label>
+
+          <label className="block">
+            <span className="text-sm text-gray-700">Password</span>
+            <input
+              type="password"
+              className="mt-1 w-full rounded-lg border border-gray-300 p-2 outline-none focus:ring-2 focus:ring-indigo-500"
+              value={password}
+              onChange={(e)=>setPassword(e.target.value)}
+              required
+              autoComplete="current-password"
+            />
+          </label>
+
+          {err && <p className="text-sm text-red-600">{err}</p>}
+
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full rounded-lg bg-gradient-to-r from-indigo-600 to-teal-400 py-2.5 font-semibold text-white disabled:opacity-60"
+          >
+            {loading ? 'Signing in…' : (tab==='signin' ? 'Sign In' : 'Create Account')}
+          </button>
+        </form>
+
+        <div className="mt-4">
+          <button
+            onClick={googleStartRedirect}
+            className="w-full rounded-lg border border-gray-300 py-2.5 font-medium hover:bg-gray-50"
+          >
+            Continue with Google
+          </button>
+        </div>
+
+        <p className="mt-3 text-xs text-gray-500">
+          By continuing you agree to our Terms and Privacy Policy.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+
+src/pages/SignIn.tsx
+
+import React from 'react';
+import SignInModal from '../components/auth/SignInModal';
+import { useSignInModal } from '../hooks/useSignInModal';
+
+export default function SignInPage() {
+  const { openModal } = useSignInModal();
+
+  React.useEffect(() => {
+    // Open the modal automatically when landing on /signin
+    openModal();
+  }, [openModal]);
+
+  return (
+    <div className="min-h-[60vh] flex items-center justify-center p-6">
+      <SignInModal />
+      <div className="text-center text-gray-600">
+        <p className="mt-4">If the modal doesn’t appear, <button onClick={openModal} className="text-indigo-600 underline">click here to sign in</button>.</p>
+      </div>
+    </div>
+  );
+}
+
+
+Update routes & global CTA interception
+Edit src/App.tsx (or your top-level router component). Example below assumes React Router v6 and a central layout:
+
+import { BrowserRouter, Routes, Route, useNavigate } from 'react-router-dom';
+import React from 'react';
+import { SignInModalProvider, useSignInModal } from './hooks/useSignInModal';
+import SignInPage from './pages/SignIn';
+// import other pages...
+import Home from './pages/Home'; // adjust if different
+import Connect from './pages/Connect'; // adjust if different
+
+const AUTH_CTA_TEXTS = new Set([
+  'sign in',
+  'get started free',
+  'start your free account',
+  'start free trial',
+  'get started free trial',
+  'connect your first source',
+]);
+
+function GlobalCtaInterceptor() {
+  const { openModal } = useSignInModal();
+
+  React.useEffect(() => {
+    async function isAuthed() {
+      try {
+        const res = await fetch('/api/v1/auth/status', { credentials: 'include' });
+        if (!res.ok) return false;
+        const j = await res.json();
+        return !!j?.authenticated;
+      } catch { return false; }
+    }
+
+    const handler = async (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (!target) return;
+
+      // Find clickable element
+      const clickable = target.closest('a,button,[data-auth-cta="true"]') as HTMLElement | null;
+      if (!clickable) return;
+
+      const txt = (clickable.textContent || '').trim().toLowerCase();
+      const isCta = AUTH_CTA_TEXTS.has(txt) || clickable.getAttribute('data-auth-cta') === 'true';
+      if (!isCta) return;
+
+      const authed = await isAuthed();
+      if (!authed) {
+        e.preventDefault();
+        e.stopPropagation();
+        openModal();
+      } else {
+        // let normal navigation occur (or route to /connect if the CTA has no href)
+        const isLink = clickable.tagName.toLowerCase() === 'a' && (clickable as HTMLAnchorElement).href;
+        if (!isLink) {
+          window.location.assign('/connect');
+        }
+      }
+    };
+
+    document.addEventListener('click', handler, true);
+    return () => document.removeEventListener('click', handler, true);
+  }, [openModal]);
+
+  return null;
+}
+
+function AppRoutes() {
+  return (
+    <Routes>
+      <Route path="/" element={<Home />} />
+      <Route path="/connect" element={<Connect />} />
+      <Route path="/signin" element={<SignInPage />} />
+      {/* other routes */}
+    </Routes>
+  );
+}
+
+export default function AppRoot() {
+  return (
+    <BrowserRouter>
+      <SignInModalProvider>
+        <GlobalCtaInterceptor />
+        <AppRoutes />
+      </SignInModalProvider>
+    </BrowserRouter>
+  );
+}
+
+
+Optional (mark nav CTAs explicitly):
+Add data-auth-cta="true" to any button/link components for reliability, e.g. in your nav or hero CTAs:
+
+<a href="/signin" data-auth-cta="true" className="...">Get Started Free</a>
+
+
+Build/Run checks
+
+npm run dev
+
+Visit /signin → modal auto-opens.
+
+Click hero/nav CTAs → if not authed, modal opens. If authed, goes to /connect.
+
+Sign in with email/password → redirect to /connect.
+
+“Continue with Google” → goes through OAuth, returns to /connect/callback?..., then /connect.
+
+Notes
+
+No new libraries added.
+
+All fetches include credentials: 'include'.
+
+If your file paths differ, adapt imports accordingly.
