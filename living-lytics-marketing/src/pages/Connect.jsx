@@ -1,31 +1,47 @@
 import React, { useState, useEffect } from 'react';
-import { getAuthStatus, startGoogleConnect, startInstagramConnect } from '@/lib/api';
+import { getAuthStatus, startGoogleConnect, startInstagramConnect, disconnectGoogle, disconnectInstagram } from '@/lib/api';
 import { ConnectedBadge, DisconnectedBadge } from '@/components/Badges';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Loader2, BarChart3, Instagram } from 'lucide-react';
+import { useToast } from '@/components/ui/use-toast';
+import { Loader2, BarChart3, Instagram, Unplug } from 'lucide-react';
 
 export default function Connect() {
   const [authStatus, setAuthStatus] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [disconnecting, setDisconnecting] = useState({ google: false, instagram: false });
+  const { toast } = useToast();
 
   useEffect(() => {
     loadAuthStatus();
+
+    // Poll status every 20 seconds to keep badges fresh after OAuth
+    const interval = setInterval(() => {
+      loadAuthStatus(true); // Silent refresh (don't show loading state)
+    }, 20000);
+
+    return () => clearInterval(interval);
   }, []);
 
-  const loadAuthStatus = async () => {
+  const loadAuthStatus = async (silent = false) => {
     try {
-      setLoading(true);
+      if (!silent) {
+        setLoading(true);
+      }
       setError(null);
       const status = await getAuthStatus();
       setAuthStatus(status);
     } catch (err) {
-      setError('Failed to load connection status. Please try again.');
+      if (!silent) {
+        setError('Failed to load connection status. Please try again.');
+      }
       console.error('Error loading auth status:', err);
     } finally {
-      setLoading(false);
+      if (!silent) {
+        setLoading(false);
+      }
     }
   };
 
@@ -33,7 +49,11 @@ export default function Connect() {
     try {
       startGoogleConnect();
     } catch (err) {
-      setError('Failed to start Google Analytics connection.');
+      toast({
+        variant: 'destructive',
+        title: 'Connection failed',
+        description: 'Failed to start Google Analytics connection.',
+      });
       console.error('Error starting Google connect:', err);
     }
   };
@@ -42,8 +62,54 @@ export default function Connect() {
     try {
       startInstagramConnect();
     } catch (err) {
-      setError('Failed to start Instagram connection.');
+      toast({
+        variant: 'destructive',
+        title: 'Connection failed',
+        description: 'Failed to start Instagram connection.',
+      });
       console.error('Error starting Instagram connect:', err);
+    }
+  };
+
+  const handleGoogleDisconnect = async () => {
+    try {
+      setDisconnecting({ ...disconnecting, google: true });
+      await disconnectGoogle();
+      await loadAuthStatus(true);
+      toast({
+        title: 'Disconnected',
+        description: 'Google Analytics has been disconnected.',
+      });
+    } catch (err) {
+      toast({
+        variant: 'destructive',
+        title: 'Error',
+        description: 'Something went wrong while disconnecting Google Analytics.',
+      });
+      console.error('Error disconnecting Google:', err);
+    } finally {
+      setDisconnecting({ ...disconnecting, google: false });
+    }
+  };
+
+  const handleInstagramDisconnect = async () => {
+    try {
+      setDisconnecting({ ...disconnecting, instagram: true });
+      await disconnectInstagram();
+      await loadAuthStatus(true);
+      toast({
+        title: 'Disconnected',
+        description: 'Instagram Business has been disconnected.',
+      });
+    } catch (err) {
+      toast({
+        variant: 'destructive',
+        title: 'Error',
+        description: 'Something went wrong while disconnecting Instagram.',
+      });
+      console.error('Error disconnecting Instagram:', err);
+    } finally {
+      setDisconnecting({ ...disconnecting, instagram: false });
     }
   };
 
@@ -106,13 +172,34 @@ export default function Connect() {
                 )}
               </div>
               
-              <div className="pt-2">
+              <div className="pt-2 space-y-2">
                 <Button
                   onClick={handleGoogleConnect}
                   className="w-full gradient-button text-white border-0 rounded-xl"
                 >
                   {authStatus?.google ? 'Reconnect' : 'Connect'} Google Analytics
                 </Button>
+                
+                {authStatus?.google && (
+                  <Button
+                    onClick={handleGoogleDisconnect}
+                    disabled={disconnecting.google}
+                    variant="outline"
+                    className="w-full rounded-xl"
+                  >
+                    {disconnecting.google ? (
+                      <>
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        Disconnecting...
+                      </>
+                    ) : (
+                      <>
+                        <Unplug className="w-4 h-4 mr-2" />
+                        Disconnect
+                      </>
+                    )}
+                  </Button>
+                )}
               </div>
 
               <div className="pt-2 space-y-2 text-sm text-gray-600">
@@ -157,13 +244,34 @@ export default function Connect() {
                 )}
               </div>
               
-              <div className="pt-2">
+              <div className="pt-2 space-y-2">
                 <Button
                   onClick={handleInstagramConnect}
                   className="w-full gradient-button text-white border-0 rounded-xl"
                 >
                   {authStatus?.instagram ? 'Reconnect' : 'Connect'} Instagram Business
                 </Button>
+                
+                {authStatus?.instagram && (
+                  <Button
+                    onClick={handleInstagramDisconnect}
+                    disabled={disconnecting.instagram}
+                    variant="outline"
+                    className="w-full rounded-xl"
+                  >
+                    {disconnecting.instagram ? (
+                      <>
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        Disconnecting...
+                      </>
+                    ) : (
+                      <>
+                        <Unplug className="w-4 h-4 mr-2" />
+                        Disconnect
+                      </>
+                    )}
+                  </Button>
+                )}
               </div>
 
               <div className="pt-2 space-y-2 text-sm text-gray-600">

@@ -1,0 +1,83 @@
+Step 4 — Polish the “Connect” flow (status, toasts, and disconnect)
+
+Do these in your living-lytics-marketing app:
+
+Add env keys for “disconnect” (keeps paths flexible)
+
+VITE_API_GOOGLE_DISCONNECT=/v1/auth/google/disconnect
+VITE_API_INSTAGRAM_DISCONNECT=/v1/auth/instagram/disconnect
+
+
+(Add to .env.local in the marketing folder.)
+
+Extend the API client (src/lib/api.ts)
+
+const API = import.meta.env.VITE_API_BASE || '/api'
+
+export async function getAuthStatus() {
+  const url = `${API}${import.meta.env.VITE_API_AUTH_STATUS || '/v1/auth/status'}`
+  try {
+    const r = await fetch(url, { credentials: 'include' })
+    if (!r.ok) return {}
+    return await r.json().catch(() => ({}))
+  } catch {
+    return {}
+  }
+}
+
+export function startGoogleConnect(redirectTo?: string) {
+  const start = import.meta.env.VITE_API_GOOGLE_START || '/v1/auth/google/start'
+  const cb = redirectTo || `${window.location.origin}/connect/callback?provider=google`
+  window.location.href = `${API}${start}?redirect_uri=${encodeURIComponent(cb)}`
+}
+
+export function startInstagramConnect(redirectTo?: string) {
+  const start = import.meta.env.VITE_API_INSTAGRAM_START || '/v1/auth/instagram/start'
+  const cb = redirectTo || `${window.location.origin}/connect/callback?provider=instagram`
+  window.location.href = `${API}${start}?redirect_uri=${encodeURIComponent(cb)}`
+}
+
+export async function disconnectGoogle() {
+  const url = `${API}${import.meta.env.VITE_API_GOOGLE_DISCONNECT || '/v1/auth/google/disconnect'}`
+  const r = await fetch(url, { method: 'POST', credentials: 'include' })
+  if (!r.ok) throw new Error('Google disconnect failed')
+}
+
+export async function disconnectInstagram() {
+  const url = `${API}${import.meta.env.VITE_API_INSTAGRAM_DISCONNECT || '/v1/auth/instagram/disconnect'}`
+  const r = await fetch(url, { method: 'POST', credentials: 'include' })
+  if (!r.ok) throw new Error('Instagram disconnect failed')
+}
+
+
+Add success/error toasts (shadcn/ui)
+
+Ensure a global <Toaster /> is mounted once (e.g., in App.tsx).
+
+In src/pages/Connect.tsx, after getAuthStatus():
+
+Show a green “Connected ✓” badge with the account email if available.
+
+If connected, show a small Disconnect button that calls disconnectGoogle() or disconnectInstagram(), then refreshes getAuthStatus() and shows a success toast (“Disconnected”).
+
+Catch errors and show a red toast (“Something went wrong”).
+
+Add lightweight status polling
+
+In Connect.tsx, use useEffect to poll getAuthStatus() every 20 seconds (clear interval on unmount). This keeps badges fresh after returning from OAuth.
+
+Callback page UX
+
+In ConnectCallback.tsx, read provider and optional status/message from the URL.
+
+Immediately call getAuthStatus(), show a quick “Google connected” or “Instagram connected” toast if the provider is now connected, then link back to /connect.
+
+Test
+
+From your site, go to /connect.
+
+Click Connect Google → complete flow (or at least see the backend start URL).
+
+Return to /connect/callback, confirm the toast and badge changes.
+
+Try Disconnect and confirm status updates and toast.

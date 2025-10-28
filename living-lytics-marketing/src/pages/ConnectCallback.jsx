@@ -5,6 +5,7 @@ import { createPageUrl } from '@/utils';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { useToast } from '@/components/ui/use-toast';
 import { CheckCircle2, XCircle, Loader2, ArrowLeft } from 'lucide-react';
 
 export default function ConnectCallback() {
@@ -13,6 +14,7 @@ export default function ConnectCallback() {
   const [status, setStatus] = useState(null);
   const [message, setMessage] = useState('');
   const [provider, setProvider] = useState('');
+  const { toast } = useToast();
 
   useEffect(() => {
     handleCallback();
@@ -35,10 +37,29 @@ export default function ConnectCallback() {
       }
 
       // Always refresh auth status to get latest connection state
-      await getAuthStatus();
+      const authStatus = await getAuthStatus();
 
-      // If no status param provided, assume success
-      if (!statusParam) {
+      // Check if the provider is now connected
+      const isConnected = providerParam && authStatus[providerParam];
+      
+      if (isConnected) {
+        // Show success toast
+        const providerName = providerParam === 'google' ? 'Google Analytics' : 
+                            providerParam === 'instagram' ? 'Instagram Business' : 
+                            'Account';
+        
+        toast({
+          title: 'Connected!',
+          description: `${providerName} has been successfully connected.`,
+        });
+        
+        // Set success status if not already set
+        if (!statusParam) {
+          setStatus('success');
+          setMessage(`${providerName} connected successfully! Your account has been linked.`);
+        }
+      } else if (!statusParam) {
+        // If no status param and not connected, assume success anyway
         setStatus('success');
         setMessage('Connection successful! Your account has been linked.');
       }
@@ -46,6 +67,12 @@ export default function ConnectCallback() {
       console.error('Error in callback:', err);
       setStatus('error');
       setMessage('An error occurred while processing the connection.');
+      
+      toast({
+        variant: 'destructive',
+        title: 'Connection error',
+        description: 'An error occurred while processing the connection.',
+      });
     } finally {
       setLoading(false);
     }
