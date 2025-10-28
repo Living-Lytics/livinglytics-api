@@ -173,6 +173,30 @@ def on_startup():
     except Exception as e:
         logging.error(f"[STARTUP] Failed to create ga4_properties table: {e}")
     
+    # Add auth columns to users table (idempotent)
+    try:
+        with engine.connect() as conn:
+            # Add password_hash column if it doesn't exist
+            conn.execute(text("""
+                ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT NULL
+            """))
+            # Add google_sub column if it doesn't exist
+            conn.execute(text("""
+                ALTER TABLE users ADD COLUMN IF NOT EXISTS google_sub TEXT NULL
+            """))
+            # Add unique constraint on google_sub (will fail silently if exists)
+            try:
+                conn.execute(text("""
+                    ALTER TABLE users ADD CONSTRAINT users_google_sub_key UNIQUE (google_sub)
+                """))
+            except Exception:
+                pass  # Constraint already exists
+            
+            conn.commit()
+            logging.info("[STARTUP] Auth columns added/verified on users table")
+    except Exception as e:
+        logging.error(f"[STARTUP] Failed to add auth columns: {str(e)}")
+    
     # Create indexes
     try:
         with engine.connect() as conn:

@@ -26,10 +26,7 @@ async def register(request: RegisterRequest, db: Session = Depends(get_db)):
     ).scalar_one_or_none()
     
     if existing_user:
-        return AuthResponse(
-            ok=False,
-            message="Email already registered"
-        )
+        raise HTTPException(status_code=400, detail="Email already registered")
     
     hashed_password = hash_password(request.password)
     
@@ -61,16 +58,10 @@ async def login(request: LoginRequest, db: Session = Depends(get_db)):
     ).scalar_one_or_none()
     
     if not user or not user.password_hash:
-        return AuthResponse(
-            ok=False,
-            message="Invalid email or password"
-        )
+        raise HTTPException(status_code=401, detail="Invalid email or password")
     
     if not verify_password(request.password, user.password_hash):
-        return AuthResponse(
-            ok=False,
-            message="Invalid email or password"
-        )
+        raise HTTPException(status_code=401, detail="Invalid email or password")
     
     access_token = create_access_token(user.email, str(user.id))
     
@@ -219,16 +210,20 @@ async def disconnect_google(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
-    db.execute(
+    data_source = db.execute(
         select(DataSource).where(
             DataSource.user_id == user.id,
             DataSource.source_name == "google_analytics"
         )
     ).scalar_one_or_none()
     
+    if data_source:
+        db.delete(data_source)
+    
     if user.google_sub:
         user.google_sub = None
-        db.commit()
+    
+    db.commit()
     
     logger.info(f"User disconnected Google: {email}")
     
