@@ -1,13 +1,24 @@
 import React from 'react';
+import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import CTAButton from '../marketing/CTAButton';
 import { createPageUrl } from '@/utils';
-import { base44 } from '@/api/base44Client';
+import { openSignInModal } from '@/hooks/useSignInModal';
+import { getAuthStatus } from '@/lib/api';
 import { CheckCircle } from 'lucide-react';
 
 export default function FinalCTA() {
-  const handleGetStarted = () => {
-    base44.auth.redirectToLogin();
+  const navigate = useNavigate();
+  
+  const handleGetStarted = async () => {
+    const status = await getAuthStatus();
+    const authenticated = !!(status && (status.google || status.instagram || status.authenticated));
+    
+    if (authenticated) {
+      navigate('/connect');
+    } else {
+      openSignInModal();
+    }
   };
 
   return (

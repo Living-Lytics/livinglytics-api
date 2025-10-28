@@ -1,12 +1,23 @@
 import React from 'react';
-import { base44 } from '@/api/base44Client';
+import { useNavigate } from 'react-router-dom';
+import { openSignInModal } from '@/hooks/useSignInModal';
+import { getAuthStatus } from '@/lib/api';
 import CTAButton from '../marketing/CTAButton';
 import DashboardMockup from './DashboardMockup';
 import { Play, CheckCircle } from 'lucide-react';
 
 export default function HeroSection() {
-  const handleGetStarted = () => {
-    base44.auth.redirectToLogin();
+  const navigate = useNavigate();
+  
+  const handleGetStarted = async () => {
+    const status = await getAuthStatus();
+    const authenticated = !!(status && (status.google || status.instagram || status.authenticated));
+    
+    if (authenticated) {
+      navigate('/connect');
+    } else {
+      openSignInModal();
+    }
   };
 
   return (

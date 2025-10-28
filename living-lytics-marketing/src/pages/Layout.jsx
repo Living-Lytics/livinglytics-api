@@ -1,16 +1,19 @@
 
 
 import React from "react";
-import { Link, useLocation } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { createPageUrl } from "@/utils";
 import { Menu, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { base44 } from "@/api/base44Client";
+import { openSignInModal } from "@/hooks/useSignInModal";
+import { getAuthStatus } from "@/lib/api";
 
 export default function Layout({ children, currentPageName }) {
   const location = useLocation();
+  const navigate = useNavigate();
   const [mobileMenuOpen, setMobileMenuOpen] = React.useState(false);
   const [scrolled, setScrolled] = React.useState(false);
+  const [isAuthenticated, setIsAuthenticated] = React.useState(false);
 
   React.useEffect(() => {
     const handleScroll = () => {
@@ -19,6 +22,20 @@ export default function Layout({ children, currentPageName }) {
     window.addEventListener('scroll', handleScroll);
     return () => window.removeEventListener('scroll', handleScroll);
   }, []);
+
+  React.useEffect(() => {
+    // Check auth status on mount
+    checkAuth();
+  }, []);
+
+  const checkAuth = async () => {
+    try {
+      const status = await getAuthStatus();
+      setIsAuthenticated(!!(status && (status.google || status.instagram || status.authenticated)));
+    } catch {
+      setIsAuthenticated(false);
+    }
+  };
 
   const navLinks = [
     { name: 'Home', path: 'Home' },
@@ -32,11 +49,23 @@ export default function Layout({ children, currentPageName }) {
   ];
 
   const handleSignIn = () => {
-    base44.auth.redirectToLogin();
+    if (isAuthenticated) {
+      navigate('/connect');
+    } else {
+      navigate('/signin');
+    }
   };
 
-  const handleGetStarted = () => {
-    base44.auth.redirectToLogin();
+  const handleGetStarted = async () => {
+    // Check if authenticated
+    const status = await getAuthStatus();
+    const authenticated = !!(status && (status.google || status.instagram || status.authenticated));
+    
+    if (authenticated) {
+      navigate('/connect');
+    } else {
+      openSignInModal();
+    }
   };
 
   return (

@@ -24,6 +24,8 @@ import Connect from "./Connect";
 
 import ConnectCallback from "./ConnectCallback";
 
+import SignIn from "./SignIn";
+
 import { BrowserRouter as Router, Route, Routes, useLocation } from 'react-router-dom';
 
 const PAGES = {
@@ -49,6 +51,8 @@ const PAGES = {
     Contact: Contact,
     
     Connect: Connect,
+    
+    SignIn: SignIn,
     
 }
 
@@ -100,6 +104,8 @@ function PagesContent() {
                 <Route path="/Connect" element={<Connect />} />
                 
                 <Route path="/connect/callback" element={<ConnectCallback />} />
+                
+                <Route path="/signin" element={<SignIn />} />
                 
             </Routes>
         </Layout>

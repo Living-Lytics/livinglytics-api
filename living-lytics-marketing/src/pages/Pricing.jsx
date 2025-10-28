@@ -1,6 +1,8 @@
 import React from 'react';
+import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { base44 } from '@/api/base44Client';
+import { openSignInModal } from '@/hooks/useSignInModal';
+import { getAuthStatus } from '@/lib/api';
 import { createPageUrl } from '@/utils';
 import SectionHeading from '../components/marketing/SectionHeading';
 import CTAButton from '../components/marketing/CTAButton';
@@ -14,7 +16,19 @@ import {
 } from '@/components/ui/accordion';
 
 export default function Pricing() {
+  const navigate = useNavigate();
   const [isAnnual, setIsAnnual] = React.useState(false);
+
+  const handleStartTrial = async () => {
+    const status = await getAuthStatus();
+    const authenticated = !!(status && (status.google || status.instagram || status.authenticated));
+    
+    if (authenticated) {
+      navigate('/connect');
+    } else {
+      openSignInModal();
+    }
+  };
 
   const plans = [
     {
@@ -120,7 +134,7 @@ export default function Pricing() {
               <p className="text-xl text-[#1E1E2F]/60 mb-8 leading-relaxed">
                 Choose a plan that fits your growth stage—upgrade as you scale.
               </p>
-              <CTAButton onClick={() => base44.auth.redirectToLogin()}>
+              <CTAButton onClick={handleStartTrial}>
                 Start Free Trial
               </CTAButton>
             </motion.div>
@@ -227,7 +241,7 @@ export default function Pricing() {
                 </div>
 
                 <Button
-                  onClick={() => base44.auth.redirectToLogin()}
+                  onClick={handleStartTrial}
                   className={`w-full mb-6 rounded-xl h-12 ${
                     plan.popular
                       ? 'gradient-button text-white border-0'

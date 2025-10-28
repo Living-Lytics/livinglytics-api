@@ -1,0 +1,136 @@
+I’m in the living-lytics-marketing app (Vite + React + Tailwind + shadcn/ui). The Vite proxy is already set up so /api/* → http://localhost:8080.
+Build a unified Sign-In / Sign-Up experience and wire these CTAs to open it:
+“Sign In”, “Get Started Free”, “Start Your Free Account”, “Start Free Trial”, “Get Started Free Trial”, “Connect Your First Source”.
+
+1) Env and API client
+
+Ensure .env.local has:
+
+VITE_API_BASE=/api
+VITE_API_LOGIN=/v1/auth/login
+VITE_API_REGISTER=/v1/auth/register
+VITE_API_GOOGLE_START=/v1/auth/google/start
+VITE_API_AUTH_STATUS=/v1/auth/status
+
+
+In src/lib/api.ts (or .js) add:
+
+const API = import.meta.env.VITE_API_BASE || '/api'
+
+export async function login(email, password) → POST ${API}${VITE_API_LOGIN} with JSON {email,password}, credentials:'include'; return { ok:boolean, message?:string }.
+
+export async function register(email, password) → POST ${API}${VITE_API_REGISTER} as above.
+
+export function loginWithGoogle(redirectTo?: string) → window.location.href = \${API}${VITE_API_GOOGLE_START}?redirect_uri=${encodeURIComponent(redirectTo || window.location.origin + '/connect/callback?provider=google')}`;`
+
+export async function getAuthStatus() → GET ${API}${VITE_API_AUTH_STATUS}, tolerant to 404 → {}.
+
+2) Pages & components
+
+Create src/pages/SignIn.tsx that shows tabs: “Sign In” and “Create Account”.
+
+Sign In tab: Email, Password, “Continue” button, “Continue with Google” button.
+
+Create Account tab: Email, Password, Confirm Password, “Create Account” button, “Continue with Google”.
+
+Basic validation: email format; password length ≥ 8; confirm matches.
+
+On success (login or register): navigate to /connect and show a success toast (“Signed in” or “Account created”).
+
+On error: show a red toast and inline helper text from server message if present.
+
+Create lightweight modal src/components/auth/SignInModal.tsx that renders the same content as the page (reuse a SignInForm component to avoid duplication). It should:
+
+Open/close via a simple global state (Zustand not required—use React context or a small useSignInModal hook).
+
+Trap focus and close on overlay click or ESC.
+
+Ensure a global <Toaster /> is mounted once (in App.tsx) if not already.
+
+3) Routing & CTA interception
+
+Add route /signin → SignIn.tsx.
+
+Expose a tiny openSignInModal() helper (exported from the hook) so any button can open the modal.
+
+Find these CTAs across navbar, hero, pricing, and feature sections:
+
+“Sign In”
+
+“Get Started Free”
+
+“Start Your Free Account”
+
+“Start Free Trial”
+
+“Get Started Free Trial”
+
+“Connect Your First Source”
+
+For “Sign In”: navigate to /signin (desktop) and also allow opening the modal for inline flow on landing pages.
+
+For the others: open the Sign-In modal by default. If getAuthStatus() indicates a logged-in session, route to /connect instead of opening the modal.
+
+4) UX rules
+
+Buttons show loading states during API calls.
+
+Disable submit button while loading.
+
+Use shadcn/ui components (Card, Button, Input, Tabs, Badge, Alert).
+
+Simple password rules text under fields: “Use at least 8 characters.”
+
+Don’t store secrets in the frontend; we only call the backend.
+
+5) Redirects & Google OAuth
+
+“Continue with Google” calls loginWithGoogle() using redirect_uri = {origin}/connect/callback?provider=google.
+
+After OAuth, the callback page already refreshes status; from there, link back to /connect.
+
+6) Guarded navigation
+
+In SignIn.tsx and the modal, on mount call getAuthStatus():
+
+If already authenticated, immediately route to /connect.
+
+Optional: add a small banner on /signin if already logged in: “You’re signed in.”
+
+7) Tests (print results to console)
+
+Print the preview URL.
+
+Confirm clicking each CTA opens the Sign-In modal (or routes to /signin) when not logged in.
+
+Confirm authenticated users clicking those CTAs go to /connect.
+
+Simulate login with a fake POST (if backend not ready): handle 401/404 gracefully with a toast.
+
+Output the full OAuth start URL used by the Google button so I can verify it.
+
+8) Files to create/update
+
+.env.local (ensure keys above)
+
+src/lib/api.ts (add login/register/google/status helpers)
+
+src/pages/SignIn.tsx (tabs for Sign In / Create Account)
+
+src/components/auth/SignInModal.tsx + src/components/auth/SignInForm.tsx (shared form)
+
+src/hooks/useSignInModal.ts (or simple context)
+
+Update Navbar/Hero/Pricing/CTA components to use modal/open or route to /signin
+
+Ensure router registers /signin
+
+9) Deliverables
+
+The preview URL.
+
+List of edited files.
+
+The two final action URLs used by the Google button (start + redirect).
+
+Brief test notes so I can click through.
