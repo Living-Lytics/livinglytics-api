@@ -130,7 +130,10 @@ async def google_oauth_start():
 async def google_oauth_callback(code: str, db: Session = Depends(get_db)):
     import httpx
     
+    logger.info(f"[OAUTH] Google callback received. FRONTEND_URL={FRONTEND_URL}")
+    
     if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
+        logger.error("[OAUTH] Missing Google OAuth credentials")
         return RedirectResponse(url=f"{FRONTEND_URL}/connect/callback?provider=google&status=error")
     
     try:
