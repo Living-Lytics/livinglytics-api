@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from db import get_db
 from models import User, DataSource
 from auth.schemas import RegisterRequest, LoginRequest, AuthResponse, AuthStatusResponse
-from auth.security import hash_password, verify_password, create_access_token, get_current_user_email
+from auth.security import hash_password, verify_password, create_access_token, get_current_user_email, get_current_user_email_optional
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/auth", tags=["Authentication"])
@@ -76,15 +76,28 @@ async def login(request: LoginRequest, db: Session = Depends(get_db)):
 
 @router.get("/status", response_model=AuthStatusResponse)
 async def get_auth_status(
-    email: str = Depends(get_current_user_email),
+    email: str | None = Depends(get_current_user_email_optional),
     db: Session = Depends(get_db)
 ):
+    if not email:
+        return AuthStatusResponse(
+            authenticated=False,
+            email=None,
+            google=False,
+            instagram=False
+        )
+    
     user = db.execute(
         select(User).where(User.email == email)
     ).scalar_one_or_none()
     
     if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+        return AuthStatusResponse(
+            authenticated=False,
+            email=None,
+            google=False,
+            instagram=False
+        )
     
     google_connected = db.execute(
         select(DataSource).where(

@@ -51,6 +51,18 @@ def get_current_user_email(credentials: HTTPAuthorizationCredentials = Security(
     return email
 
 
+def get_current_user_email_optional(credentials: HTTPAuthorizationCredentials | None = Security(security, auto_error=False)) -> str | None:
+    """Optional authentication - returns None if no token provided instead of raising error."""
+    if credentials is None:
+        return None
+    try:
+        token = credentials.credentials
+        payload = decode_token(token)
+        return payload.get("sub")
+    except HTTPException:
+        return None
+
+
 def get_current_user_id(credentials: HTTPAuthorizationCredentials = Security(security)) -> str:
     token = credentials.credentials
     payload = decode_token(token)
