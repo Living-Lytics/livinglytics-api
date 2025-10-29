@@ -33,6 +33,13 @@ export default function ConnectCallback() {
       // If token is provided (from Google OAuth), store it
       if (tokenParam) {
         localStorage.setItem('ll_token', tokenParam);
+        
+        // If this is first-time login and onboarding not done, redirect to onboarding
+        const onboarded = localStorage.getItem('ll_onboarding_done') === '1';
+        if (!onboarded) {
+          window.location.replace('/onboarding');
+          return;
+        }
       }
 
       setProvider(providerParam || 'account');

@@ -76,9 +76,10 @@ async def login(request: LoginRequest, db: Session = Depends(get_db)):
 
 @router.get("/status", response_model=AuthStatusResponse)
 async def get_auth_status(
-    email: str | None = Depends(get_current_user_email_optional),
+    request: Request,
     db: Session = Depends(get_db)
 ):
+    email = get_current_user_email_optional(request)
     if not email:
         return AuthStatusResponse(
             authenticated=False,

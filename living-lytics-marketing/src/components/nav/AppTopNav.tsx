@@ -8,6 +8,8 @@ export default function AppTopNav({ email }: { email?: string | null }) {
 
   async function logout() {
     try { await fetch('/api/v1/auth/logout', { method: 'POST', credentials: 'include' }); } catch {}
+    localStorage.removeItem('ll_token');
+    localStorage.removeItem('ll_onboarding_done');
     window.location.assign('/');
   }
 

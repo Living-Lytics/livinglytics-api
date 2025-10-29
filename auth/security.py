@@ -51,16 +51,19 @@ def get_current_user_email(credentials: HTTPAuthorizationCredentials = Security(
     return email
 
 
-def get_current_user_email_optional(credentials: HTTPAuthorizationCredentials | None = Security(security, auto_error=False)) -> str | None:
-    """Optional authentication - returns None if no token provided instead of raising error."""
-    if credentials is None:
+from typing import Optional
+from fastapi import Request
+
+def get_current_user_email_optional(request: Request) -> str | None:
+    """Optional authentication - returns None if no token provided, raises 401 for invalid tokens."""
+    auth_header = request.headers.get("Authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
         return None
-    try:
-        token = credentials.credentials
-        payload = decode_token(token)
-        return payload.get("sub")
-    except HTTPException:
-        return None
+    
+    # Token provided - must be valid
+    token = auth_header.split(" ")[1]
+    payload = decode_token(token)  # This will raise HTTPException for invalid/expired tokens
+    return payload.get("sub")
 
 
 def get_current_user_id(credentials: HTTPAuthorizationCredentials = Security(security)) -> str:
