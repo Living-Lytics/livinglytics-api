@@ -28,6 +28,12 @@ export default function ConnectCallback() {
       const providerParam = searchParams.get('provider');
       const statusParam = searchParams.get('status');
       const messageParam = searchParams.get('message');
+      const tokenParam = searchParams.get('token');
+
+      // If token is provided (from Google OAuth), store it
+      if (tokenParam) {
+        localStorage.setItem('ll_token', tokenParam);
+      }
 
       setProvider(providerParam || 'account');
       
