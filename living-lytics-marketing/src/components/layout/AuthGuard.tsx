@@ -12,9 +12,15 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
       const status = await fetchAuthStatus();
       const isAuthed = !!status?.authenticated;
 
-      if (!isAuthed) { 
-        setReady(true); 
-        return; 
+      const appRoutes = ['/dashboard', '/connect', '/settings', '/insights', '/onboarding'];
+      const isAppRoute = appRoutes.some(route => loc.pathname.startsWith(route));
+
+      if (!isAuthed) {
+        if (isAppRoute) {
+          nav('/signin', { replace: true });
+        }
+        setReady(true);
+        return;
       }
 
       const onboarded = isOnboardingDone();
