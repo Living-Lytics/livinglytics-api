@@ -21,6 +21,10 @@ Living Lytics API is a production-ready analytics engine and data integration pl
 - **Admin manual token refresh** endpoint for Instagram connections
 - **OAuth callbacks redirect** to frontend `/connect/callback?provider=X&status=success/error`
 - Public-only data exposure for GitHub endpoints (private repos filtered)
+- **Onboarding flow**: After login, new users complete onboarding questions (industry, role, goal), then connect data sources before accessing dashboard
+- **AuthGuard routing**: Enforces login → onboarding → connect → dashboard sequence; unauthenticated users redirected to /signin when accessing app routes
+- **Theme support**: Light/dark mode toggle in Settings page, persisted to localStorage, applied via Tailwind dark: classes
+- **App vs Marketing navigation**: AppTopNav shows for authenticated app routes (/dashboard, /connect, /settings, /insights, /onboarding); marketing nav shows for public pages without "Connections" link
 - **Structured logging** with user_id, period, and status for digest operations
 - **Cache-Control headers** on timeline endpoint (5 minutes) for performance
 - INFO-level logging for production visibility (including weekly digest tracking)
@@ -39,7 +43,13 @@ The marketing site uses a Vite proxy to forward `/api/*` requests to the backend
 ### Tech Stack
 The API is built with Python 3.11 and FastAPI. It uses SQLAlchemy 2.x with psycopg 3.x for PostgreSQL connectivity, Pydantic for data validation, PyGithub and Replit GitHub Connector for GitHub integration, and httpx for Resend API integration.
 
-The marketing site is built with Vite, React, and Tailwind CSS. It includes pages for features, pricing, integrations, case studies, and contact information.
+The marketing site is built with Vite, React, and Tailwind CSS. It includes:
+- **Public Pages**: Features, pricing, integrations, case studies, contact, and marketing content
+- **App Pages**: Dashboard, Onboarding, Settings, Insights, and Connections management
+- **Theme System**: Light/dark mode support with localStorage persistence via ThemeProvider
+- **App Navigation**: Dedicated AppTopNav for authenticated users with dashboard, connections, insights, and settings links
+- **Auth Guard**: Route guard that enforces login → onboarding → connect → dashboard flow
+- **Onboarding Flow**: First-time user experience with industry, role, and goal questions (localStorage-tracked with optional backend sync to `/v1/onboarding`)
 
 ### Database Schema
 A PostgreSQL database stores user information, data source connections (including OAuth tokens), selected GA4 properties, collected metric data, email delivery events, and weekly digest run logs. Row-Level Security (RLS) is enabled on all tables with a default-deny policy.
