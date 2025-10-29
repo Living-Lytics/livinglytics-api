@@ -23,6 +23,11 @@ Living Lytics API is a production-ready analytics engine and data integration pl
 - Public-only data exposure for GitHub endpoints (private repos filtered)
 - **Onboarding flow**: After login, new users complete onboarding questions (industry, role, goal), then connect data sources before accessing dashboard
 - **AuthGuard routing**: Enforces login → onboarding → connect → dashboard sequence; unauthenticated users redirected to /signin when accessing app routes
+- **Shared Auth State**: Centralized auth state management with AuthProvider context (src/state/auth.tsx) eliminates duplicate fetches and prevents redirect loops
+- **AuthBootstrap**: Single auth fetch on app mount sets ready flag; all components wait for ready before routing decisions
+- **GlobalCtaInterceptor**: Automatically opens sign-in modal for unauthenticated CTA clicks; deactivates when authenticated to prevent interference
+- **Redirect Loop Prevention**: AuthGuard uses lastRedirectRef to redirect at most once per state change; allows free navigation to all app routes (/dashboard, /connect, /settings, /insights) once prerequisites met
+- **OAuth Replace Navigation**: ConnectCallback uses replace navigation to prevent back-button re-triggering of OAuth flow
 - **Theme support**: Light/dark mode toggle in Settings page, persisted to localStorage, applied via Tailwind dark: classes
 - **App vs Marketing navigation**: AppTopNav shows for authenticated app routes (/dashboard, /connect, /settings, /insights, /onboarding); marketing nav shows for public pages without "Connections" link
 - **Google OAuth redirects**: Backend uses FRONTEND_URL to redirect to `/connect/callback?provider=google&status=success&token={JWT}` after authentication; frontend stores JWT in localStorage

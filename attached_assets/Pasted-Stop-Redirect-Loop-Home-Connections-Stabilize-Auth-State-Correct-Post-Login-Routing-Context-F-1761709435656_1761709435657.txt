@@ -1,0 +1,253 @@
+Stop Redirect Loop (Home↔︎Connections), Stabilize Auth State, Correct Post-Login Routing
+
+Context
+
+Frontend: React + Vite + Tailwind; Router v6.
+
+We added:
+
+GlobalCtaInterceptor (opens Sign-In modal when not authed)
+
+AuthGuard (routes authed users: onboarding → connect → dashboard)
+
+OAuth callback → then onboarding/connection pages
+
+Symptom: After logging in, page flickers between Home and /connect.
+
+Root causes to address
+
+CTA interceptor still catching clicks after auth, forcing “/connect” while AuthGuard also redirects → loop.
+
+AuthGuard re-running redirects on every render because status toggles or because we redirect even when already on the target route.
+
+OAuth callback/history not stabilized (back button can re-trigger).
+
+Goals
+
+Only intercept CTAs when not authenticated.
+
+Debounce/stabilize auth status in a shared store and redirect only when necessary.
+
+OAuth callback: navigate once with replace, then stop.
+
+Prevent multiple redirects in one render tick.
+
+Tasks
+A) Create a tiny shared auth store (no libs)
+
+Add src/state/auth.ts
+
+import React from 'react';
+
+export type AuthStatus = {
+  authenticated?: boolean;
+  email?: string | null;
+  providers?: Record<string, { connected: boolean; email?: string | null }>;
+};
+
+type Ctx = {
+  status: AuthStatus;
+  setStatus: (s: AuthStatus) => void;
+  ready: boolean;
+  setReady: (v: boolean) => void;
+};
+
+const AuthCtx = React.createContext<Ctx | null>(null);
+
+export function AuthProvider({ children }:{children:React.ReactNode}) {
+  const [status, setStatus] = React.useState<AuthStatus>({ authenticated: false, providers: {} });
+  const [ready, setReady] = React.useState(false);
+  return <AuthCtx.Provider value={{ status, setStatus, ready, setReady }}>{children}</AuthCtx.Provider>;
+}
+
+export function useAuth() {
+  const ctx = React.useContext(AuthCtx);
+  if (!ctx) throw new Error('useAuth must be used within AuthProvider');
+  return ctx;
+}
+
+
+Update src/lib/auth.ts to use tolerant fetch (no console spam):
+
+export async function fetchAuthStatus(): Promise<AuthStatus> {
+  try {
+    const res = await fetch('/api/v1/auth/status', { credentials: 'include' });
+    if (!res.ok) return { authenticated:false, providers:{} };
+    return res.json();
+  } catch {
+    return { authenticated:false, providers:{} };
+  }
+}
+
+export function hasAnyConnection(status?: AuthStatus): boolean {
+  if (!status?.providers) return false;
+  return Object.values(status.providers).some(p => p.connected);
+}
+
+B) Wire the provider at the top of the app
+
+Edit src/App.tsx (or root):
+
+Wrap your app with both ThemeProvider and AuthProvider.
+
+Do a single auth fetch on mount and set it in context.
+
+Example:
+
+import { AuthProvider, useAuth } from './state/auth';
+import { ThemeProvider } from './state/theme';
+import { fetchAuthStatus } from './lib/auth';
+
+function AuthBootstrap({ children }:{children:React.ReactNode}) {
+  const { setStatus, setReady } = useAuth();
+  React.useEffect(() => { (async()=>{
+    const s = await fetchAuthStatus();
+    setStatus(s);
+    setReady(true);
+  })(); }, [setStatus, setReady]);
+  return <>{children}</>;
+}
+
+// In default export:
+<ThemeProvider>
+  <AuthProvider>
+    <AuthBootstrap>
+      {/* Router + layouts here */}
+    </AuthBootstrap>
+  </AuthProvider>
+</ThemeProvider>
+
+C) Fix GlobalCtaInterceptor to run only when not authed
+
+Edit src/App.tsx (or file with GlobalCtaInterceptor):
+
+function GlobalCtaInterceptor() {
+  const { status } = useAuth();
+  const isAuthed = !!status?.authenticated;
+
+  React.useEffect(() => {
+    if (isAuthed) return; // <-- do nothing when authed
+    const handler = async (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      const clickable = target?.closest('a,button,[data-auth-cta="true"]') as HTMLElement | null;
+      if (!clickable) return;
+
+      const txt = (clickable.textContent || '').trim().toLowerCase();
+      const isCta = ['sign in','get started free','start your free account','start free trial','get started free trial','connect your first source'].includes(txt)
+        || clickable.getAttribute('data-auth-cta') === 'true';
+      if (!isCta) return;
+
+      e.preventDefault();
+      e.stopPropagation();
+      // open modal (assume useSignInModal is available)
+      try {
+        const { openModal } = await import('./hooks/useSignInModal').then(m=>m);
+        (openModal as any)(); // if exported differently, call appropriately
+      } catch {}
+    };
+    document.addEventListener('click', handler, true);
+    return () => document.removeEventListener('click', handler, true);
+  }, [isAuthed]);
+
+  return null;
+}
+
+
+(If openModal isn’t a named export, import the hook and call it via a small wrapper mounted in tree. The key part is: don’t intercept when authed.)
+
+D) Harden AuthGuard (redirect only when needed + debounced)
+
+Edit src/components/layout/AuthGuard.tsx
+
+import React from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { hasAnyConnection } from '../../lib/auth';
+import { useAuth } from '../../state/auth';
+
+export default function AuthGuard({ children }:{children:React.ReactNode}) {
+  const { status, ready, setStatus } = useAuth();
+  const nav = useNavigate();
+  const loc = useLocation();
+  const lastRedirectRef = React.useRef<string>('');
+
+  // Optionally refresh status on guarded routes only (not every render)
+  React.useEffect(() => {
+    // If you want periodic refresh, implement a slow interval here (e.g., 20–30s)
+  }, []);
+
+  React.useEffect(() => {
+    if (!ready) return;
+    const isAuthed = !!status?.authenticated;
+    const connected = hasAnyConnection(status);
+
+    // Only redirect if authenticated
+    if (!isAuthed) return;
+
+    // Decide target
+    let target = '';
+    const onboarded = localStorage.getItem('ll_onboarding_done') === '1';
+    if (!onboarded) target = '/onboarding';
+    else if (!connected) target = '/connect';
+    else target = '/dashboard';
+
+    // If already on target or we just redirected to it, do nothing
+    if (loc.pathname === target || lastRedirectRef.current === target) return;
+
+    lastRedirectRef.current = target;
+    nav(target, { replace: true });
+  }, [ready, status, loc.pathname, nav]);
+
+  return <>{children}</>;
+}
+
+E) Make OAuth callback authoritative and history-safe
+
+Edit src/pages/ConnectCallback.(tsx|jsx) (or wherever you handle /connect/callback):
+
+import React from 'react';
+import { useNavigate } from 'react-router-dom';
+
+export default function ConnectCallback() {
+  const nav = useNavigate();
+  React.useEffect(() => {
+    const onboarded = localStorage.getItem('ll_onboarding_done') === '1';
+    const target = onboarded ? '/connect' : '/onboarding';
+    // replace history so back button won't re-trigger callback
+    nav(target, { replace: true });
+  }, [nav]);
+  return null;
+}
+
+F) Ensure marketing nav never forces redirects for authed state
+
+If your marketing header/nav runs logic on mount that navigates to /, remove it.
+
+Also ensure the public “Connections” item is removed for logged-out users (already requested).
+
+G) Optional: slow status polling only on app routes
+
+If you poll auth/status, do it every 20–30s and only on /connect, /dashboard, /settings. Avoid polling on / to reduce churn.
+
+Quick Test Plan (dev)
+
+Hard refresh after changes.
+
+Log in with Google.
+
+You should land on /onboarding (first time), with no flicker.
+
+Submit onboarding → /connect.
+
+If at least one source is connected, visiting / or clicking logo should not cause loops; AuthGuard will calmly route to /dashboard once, not repeatedly.
+
+CTAs on the marketing pages no longer intercept when authed.
+
+Acceptance Criteria
+
+No oscillation between home and connect after login.
+
+CTA interceptor is inactive when authenticated.
+
+AuthGuard redirects at most once per state change (no infinite loops).
+
+OAuth callback uses replace and sends first-time users to onboarding.
