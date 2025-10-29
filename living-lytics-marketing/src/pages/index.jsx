@@ -28,7 +28,17 @@ import SignIn from "./SignIn";
 
 import Dashboard from "./Dashboard";
 
+import Onboarding from "./Onboarding";
+
+import Settings from "./Settings";
+
+import Insights from "./Insights";
+
 import { BrowserRouter as Router, Route, Routes, useLocation } from 'react-router-dom';
+
+import { ThemeProvider } from '../state/theme';
+
+import AuthGuard from '../components/layout/AuthGuard';
 
 const PAGES = {
     
@@ -57,6 +67,12 @@ const PAGES = {
     SignIn: SignIn,
     
     Dashboard: Dashboard,
+    
+    Onboarding: Onboarding,
+    
+    Settings: Settings,
+    
+    Insights: Insights,
     
 }
 
@@ -111,7 +127,13 @@ function PagesContent() {
                 
                 <Route path="/signin" element={<SignIn />} />
                 
+                <Route path="/onboarding" element={<Onboarding />} />
+                
                 <Route path="/dashboard" element={<Dashboard />} />
+                
+                <Route path="/settings" element={<Settings />} />
+                
+                <Route path="/insights" element={<Insights />} />
                 
             </Routes>
         </Layout>
@@ -120,8 +142,12 @@ function PagesContent() {
 
 export default function Pages() {
     return (
-        <Router>
-            <PagesContent />
-        </Router>
+        <ThemeProvider>
+            <Router>
+                <AuthGuard>
+                    <PagesContent />
+                </AuthGuard>
+            </Router>
+        </ThemeProvider>
     );
 }

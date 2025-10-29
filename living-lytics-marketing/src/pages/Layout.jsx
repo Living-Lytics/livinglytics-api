@@ -7,6 +7,7 @@ import { Menu, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { openSignInModal } from "@/hooks/useSignInModal";
 import { getAuthStatus } from "@/lib/api";
+import AppTopNav from "@/components/nav/AppTopNav";
 
 export default function Layout({ children, currentPageName }) {
   const location = useLocation();
@@ -37,6 +38,9 @@ export default function Layout({ children, currentPageName }) {
     }
   };
 
+  const appRoutes = ['/dashboard', '/connect', '/settings', '/insights', '/onboarding'];
+  const isAppRoute = appRoutes.some(route => location.pathname.startsWith(route));
+
   const navLinks = [
     { name: 'Home', path: 'Home' },
     { name: 'How it Works', path: 'HowItWorks' },
@@ -44,7 +48,6 @@ export default function Layout({ children, currentPageName }) {
     { name: 'Integrations', path: 'Integrations' },
     { name: 'Pricing', path: 'Pricing' },
     { name: 'Case Studies', path: 'CaseStudies' },
-    { name: 'Connect', path: 'Connect' },
     { name: 'Resources', path: 'Resources' },
   ];
 
@@ -67,6 +70,17 @@ export default function Layout({ children, currentPageName }) {
       navigate('/signin');
     }
   };
+
+  if (isAppRoute) {
+    return (
+      <div className="min-h-screen bg-white dark:bg-slate-950">
+        <AppTopNav email={isAuthenticated ? 'user' : null} />
+        <main>
+          {children}
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-[#F8F9FB]">
