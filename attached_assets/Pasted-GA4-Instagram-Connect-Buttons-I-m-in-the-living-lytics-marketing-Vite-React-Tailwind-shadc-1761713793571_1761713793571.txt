@@ -1,0 +1,209 @@
+GA4 & Instagram Connect Buttons
+
+I’m in the living-lytics-marketing (Vite + React + Tailwind + shadcn/ui) app. The Vite proxy already routes /api/* → http://localhost:8080.
+Implement Connect and Disconnect for Google Analytics (GA4) and Instagram Business, with status polling and callback handling.
+
+1) Env vars (frontend)
+
+Ensure these lines exist in living-lytics-marketing/.env.local (add if missing):
+
+VITE_API_BASE=/api
+VITE_API_AUTH_STATUS=/v1/auth/status
+VITE_API_GOOGLE_START=/v1/auth/google/start
+VITE_API_INSTAGRAM_START=/v1/auth/instagram/start
+VITE_API_GOOGLE_DISCONNECT=/v1/auth/google/disconnect
+VITE_API_INSTAGRAM_DISCONNECT=/v1/auth/instagram/disconnect
+
+2) API client helpers
+
+Update src/lib/api.(ts|js) with these functions (create file if missing):
+
+const API = import.meta.env.VITE_API_BASE || '/api';
+
+export async function getAuthStatus() {
+  try {
+    const res = await fetch(`${API}${import.meta.env.VITE_API_AUTH_STATUS || '/v1/auth/status'}`, {
+      credentials: 'include'
+    });
+    if (!res.ok) return {};
+    return await res.json().catch(() => ({}));
+  } catch {
+    return {};
+  }
+}
+
+export function startGoogleConnect() {
+  const start = import.meta.env.VITE_API_GOOGLE_START || '/v1/auth/google/start';
+  const redirect = `${window.location.origin}/connect/callback?provider=google`;
+  window.location.href = `${API}${start}?redirect_uri=${encodeURIComponent(redirect)}`;
+}
+
+export function startInstagramConnect() {
+  const start = import.meta.env.VITE_API_INSTAGRAM_START || '/v1/auth/instagram/start';
+  const redirect = `${window.location.origin}/connect/callback?provider=instagram`;
+  window.location.href = `${API}${start}?redirect_uri=${encodeURIComponent(redirect)}`;
+}
+
+export async function disconnectGoogle() {
+  const res = await fetch(`${API}${import.meta.env.VITE_API_GOOGLE_DISCONNECT || '/v1/auth/google/disconnect'}`, {
+    method: 'POST',
+    credentials: 'include'
+  });
+  return res.ok;
+}
+
+export async function disconnectInstagram() {
+  const res = await fetch(`${API}${import.meta.env.VITE_API_INSTAGRAM_DISCONNECT || '/v1/auth/instagram/disconnect'}`, {
+    method: 'POST',
+    credentials: 'include'
+  });
+  return res.ok;
+}
+
+3) Connect page UI
+
+Edit src/pages/Connect.(tsx|jsx) to:
+
+Show two cards (GA4 + Instagram).
+
+Display Connected / Not Connected badges based on getAuthStatus().
+
+Include Connect buttons that call startGoogleConnect() / startInstagramConnect().
+
+Include Disconnect buttons (only when connected) that call the corresponding disconnect*() helpers.
+
+Poll status every 20 seconds.
+
+Use shadcn/ui Toaster for success/error toasts.
+
+Example structure (pseudo-code; adapt to project imports):
+
+import { useEffect, useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { useToast } from "@/components/ui/use-toast";
+import {
+  getAuthStatus,
+  startGoogleConnect,
+  startInstagramConnect,
+  disconnectGoogle,
+  disconnectInstagram
+} from "@/lib/api";
+
+export default function Connect() {
+  const [status, setStatus] = useState<{google?: any; instagram?: any}>({});
+  const [busy, setBusy] = useState<null | 'google' | 'instagram'>(null);
+  const { toast } = useToast();
+
+  async function load(silent?: boolean) {
+    const next = await getAuthStatus();
+    setStatus(next || {});
+    if (!silent) console.log("Auth status:", next);
+  }
+
+  useEffect(() => {
+    load();
+    const id = setInterval(() => load(true), 20000);
+    return () => clearInterval(id);
+  }, []);
+
+  async function onDisconnect(provider: 'google' | 'instagram') {
+    setBusy(provider);
+    try {
+      const ok = provider === 'google' ? await disconnectGoogle() : await disconnectInstagram();
+      if (ok) toast({ title: `${provider} disconnected` });
+      else toast({ title: `Failed to disconnect ${provider}`, variant: 'destructive' });
+      await load(true);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="max-w-4xl mx-auto mt-10 space-y-6">
+      {/* GA4 */}
+      <Card>
+        <CardContent className="py-6 flex flex-col items-center gap-3">
+          <h2 className="text-lg font-semibold">Connect Google Analytics (GA4)</h2>
+          {status?.google ? (
+            <>
+              <p className="text-sm text-green-600">
+                Connected ✓ {status.google.email || 'Active'}
+              </p>
+              <Button disabled={busy === 'google'} onClick={() => onDisconnect('google')}>
+                {busy === 'google' ? 'Disconnecting...' : 'Disconnect'}
+              </Button>
+            </>
+          ) : (
+            <Button onClick={startGoogleConnect}>Connect Google Analytics</Button>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Instagram */}
+      <Card>
+        <CardContent className="py-6 flex flex-col items-center gap-3">
+          <h2 className="text-lg font-semibold">Connect Instagram Business</h2>
+          {status?.instagram ? (
+            <>
+              <p className="text-sm text-green-600">
+                Connected ✓ {status.instagram.account_name || 'Active'}
+              </p>
+              <Button disabled={busy === 'instagram'} onClick={() => onDisconnect('instagram')}>
+                {busy === 'instagram' ? 'Disconnecting...' : 'Disconnect'}
+              </Button>
+            </>
+          ) : (
+            <Button onClick={startInstagramConnect}>Connect Instagram Business</Button>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+4) Callback page UX
+
+Ensure src/pages/ConnectCallback.(tsx|jsx):
+
+Reads provider, optional status & message from query params.
+
+Calls getAuthStatus() on mount.
+
+Shows success toast if provider is connected; else error toast with message.
+
+Provides a “Back to Connect” button linking to /connect.
+
+5) Toaster
+
+Confirm a global <Toaster /> is mounted once (e.g., in App.(tsx|jsx)).
+
+6) Tests (print confirmations)
+
+Print the preview URL.
+
+In the browser console:
+
+fetch('/api/v1/auth/status', {credentials:'include'}).then(r=>r.json()).then(console.log)
+
+Click Connect Google Analytics → confirm redirect to:
+
+${API}/v1/auth/google/start?redirect_uri=${encodeURIComponent(origin + '/connect/callback?provider=google')}
+
+Return to /connect/callback?... → expect success toast and Connected ✓ badge on /connect.
+
+Repeat for Instagram.
+
+Click Disconnect when connected → expect success toast and badge flips to Not Connected.
+
+Deliverables
+
+List of edited files.
+
+Final preview URL.
+
+The two OAuth start URLs the buttons navigate to (log them).
+
+Short test notes confirming connect + disconnect worked.
+
+Make the edits, run the dev server, and report results.

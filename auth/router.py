@@ -247,6 +247,35 @@ async def disconnect_google(
     return {"ok": True, "message": "Google account disconnected"}
 
 
+@router.get("/instagram/start")
+async def instagram_oauth_start(
+    redirect_uri: str,
+    email: str = Depends(get_current_user_email)
+):
+    """
+    Alias for Instagram OAuth flow that redirects to the main connections endpoint.
+    This provides API consistency with the Google OAuth pattern.
+    """
+    from urllib.parse import urlencode
+    redirect_url = f"/v1/connections/instagram/init?{urlencode({'email': email})}"
+    return RedirectResponse(url=redirect_url)
+
+
+@router.get("/instagram/callback")
+async def instagram_oauth_callback(
+    code: str,
+    state: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Alias for Instagram OAuth callback that redirects to the main connections endpoint.
+    This provides API consistency with the Google OAuth pattern.
+    """
+    from urllib.parse import urlencode
+    redirect_url = f"/v1/connections/instagram/callback?{urlencode({'code': code, 'state': state})}"
+    return RedirectResponse(url=redirect_url)
+
+
 @router.post("/instagram/disconnect")
 async def disconnect_instagram(
     email: str = Depends(get_current_user_email),
