@@ -25,6 +25,7 @@ Living Lytics API is a production-ready analytics engine and data integration pl
 - **AuthGuard routing**: Enforces login → onboarding → connect → dashboard sequence; unauthenticated users redirected to /signin when accessing app routes
 - **Theme support**: Light/dark mode toggle in Settings page, persisted to localStorage, applied via Tailwind dark: classes
 - **App vs Marketing navigation**: AppTopNav shows for authenticated app routes (/dashboard, /connect, /settings, /insights, /onboarding); marketing nav shows for public pages without "Connections" link
+- **Google OAuth redirects**: Backend uses FRONTEND_URL to redirect to `/connect/callback?provider=google&status=success&token={JWT}` after authentication; frontend stores JWT in localStorage
 - **Structured logging** with user_id, period, and status for digest operations
 - **Cache-Control headers** on timeline endpoint (5 minutes) for performance
 - INFO-level logging for production visibility (including weekly digest tracking)
