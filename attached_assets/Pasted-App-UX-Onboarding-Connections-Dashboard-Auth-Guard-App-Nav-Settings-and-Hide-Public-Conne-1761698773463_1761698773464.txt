@@ -1,0 +1,424 @@
+App UX (Onboarding → Connections → Dashboard), Auth Guard, App Nav, Settings, and Hide Public “Connections”
+
+Context
+
+Frontend repo: living-lytics-marketing (React + Vite + Tailwind).
+
+Backend API proxied at /api.
+
+Existing endpoints in use:
+
+GET /api/v1/auth/status (returns authenticated + provider connection info)
+
+POST /api/v1/auth/login
+
+GET /api/v1/auth/google/start
+
+POST /api/v1/auth/google/disconnect
+
+POST /api/v1/auth/instagram/disconnect
+
+New endpoint we’ll call (assume exists or create a tolerant frontend fallback):
+
+POST /api/v1/onboarding with { industry, role, purpose }, credentials included.
+If 404, just store locally (localStorage) and continue (don’t block).
+
+Goal:
+
+After login: go to /onboarding (once), then /connect, and only after ≥1 data source is connected → /dashboard.
+
+Top navbar changes: Hide “Connections” on public/marketing pages when not authenticated. Show App Nav for authenticated users (Dashboard, Connections, Insights (stub), Settings).
+
+Add Settings with a dark/light toggle persisted per user (localStorage).
+
+Build Dashboard scaffold with KPI cards, a 2-series correlation line graph (mock), and an AI insights panel (placeholder).
+
+Keep branding consistent (indigo → teal accents, clean).
+
+Files to ADD/UPDATE
+
+src/lib/auth.ts – tiny auth helpers and guards
+
+src/lib/api.ts – extend with saveOnboarding() and getConnectionsSummary()
+
+src/state/theme.tsx – theme provider (light/dark, localStorage)
+
+src/components/nav/AppTopNav.tsx – app-only top navbar with profile menu + logout
+
+src/components/layout/AuthGuard.tsx – route guard: decides onboarding → connect → dashboard
+
+src/pages/Onboarding.tsx – questions (industry, role, purpose) with POST to backend
+
+src/pages/Dashboard.tsx – KPI cards + mock 2-series line chart + AI insights panel
+
+src/pages/Settings.tsx – theme toggle and basic account links
+
+Update router in src/App.tsx (or where routes live) to mount ThemeProvider, AuthGuard, and app routes
+
+Update public/marketing nav component to remove/hide the public “Connections” link unless authenticated (if it’s in a shared component, add conditional rendering)
+
+Implementations
+1) src/lib/auth.ts
+export type AuthStatus = {
+  authenticated?: boolean;
+  email?: string | null;
+  providers?: Record<string, { connected: boolean; email?: string | null }>;
+};
+
+export async function fetchAuthStatus(): Promise<AuthStatus> {
+  const res = await fetch('/api/v1/auth/status', { credentials: 'include' });
+  if (!res.ok) return { authenticated: false };
+  return res.json();
+}
+
+export function hasAnyConnection(status?: AuthStatus): boolean {
+  if (!status?.providers) return false;
+  return Object.values(status.providers).some(p => p.connected);
+}
+
+export function rememberOnboardingDone() {
+  localStorage.setItem('ll_onboarding_done', '1');
+}
+export function isOnboardingDone() {
+  return localStorage.getItem('ll_onboarding_done') === '1';
+}
+
+2) Extend src/lib/api.ts
+export async function saveOnboarding(payload: { industry: string; role: string; purpose: string }) {
+  try {
+    const res = await fetch(`${API_BASE}/v1/onboarding`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(payload),
+    });
+    // If backend doesn’t have this yet, ignore 404
+    if (!res.ok && res.status !== 404) {
+      const msg = await safeMsg(res);
+      throw new Error(msg || 'Unable to save onboarding.');
+    }
+    return true;
+  } catch {
+    return true; // do not block UX
+  }
+}
+
+// Lightweight summary call: use /auth/status for now
+export async function getConnectionsSummary() {
+  const status = await getAuthStatus();
+  const providers = status?.providers || {};
+  const total = Object.values(providers).filter(p => p.connected).length;
+  return { total, providers };
+}
+
+3) src/state/theme.tsx
+import React, { createContext, useContext, useEffect, useState } from 'react';
+
+type Theme = 'light' | 'dark';
+type Ctx = { theme: Theme; setTheme: (t: Theme) => void; toggle: () => void; };
+const ThemeCtx = createContext<Ctx | null>(null);
+
+function getStored(): Theme {
+  const t = localStorage.getItem('ll_theme');
+  return (t === 'dark' || t === 'light') ? t : 'light';
+}
+
+export function ThemeProvider({ children }: { children: React.ReactNode }) {
+  const [theme, setThemeState] = useState<Theme>(getStored());
+
+  useEffect(() => {
+    localStorage.setItem('ll_theme', theme);
+    const root = document.documentElement;
+    if (theme === 'dark') root.classList.add('dark'); else root.classList.remove('dark');
+  }, [theme]);
+
+  const setTheme = (t: Theme) => setThemeState(t);
+  const toggle = () => setThemeState(prev => prev === 'dark' ? 'light' : 'dark');
+
+  return <ThemeCtx.Provider value={{ theme, setTheme, toggle }}>{children}</ThemeCtx.Provider>;
+}
+
+export function useTheme() {
+  const ctx = useContext(ThemeCtx);
+  if (!ctx) throw new Error('useTheme must be used within ThemeProvider');
+  return ctx;
+}
+
+4) src/components/nav/AppTopNav.tsx
+import React from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import { useTheme } from '../../state/theme';
+
+export default function AppTopNav({ email }: { email?: string | null }) {
+  const nav = useNavigate();
+  const { theme } = useTheme();
+
+  async function logout() {
+    // simple logout: clear cookie via backend if exists, else hard reload
+    try { await fetch('/api/v1/auth/logout', { method: 'POST', credentials: 'include' }); } catch {}
+    window.location.assign('/'); // back to marketing home
+  }
+
+  return (
+    <header className="sticky top-0 z-40 bg-white/80 dark:bg-slate-900/80 backdrop-blur border-b border-slate-200 dark:border-slate-800">
+      <div className="mx-auto max-w-7xl px-4 py-3 flex items-center justify-between">
+        <div className="flex items-center gap-6">
+          <Link to="/dashboard" className="font-semibold text-slate-900 dark:text-white">Living Lytics</Link>
+          <nav className="hidden md:flex items-center gap-4 text-sm">
+            <Link to="/dashboard" className="hover:text-indigo-600">Dashboard</Link>
+            <Link to="/connect" className="hover:text-indigo-600">Connections</Link>
+            <Link to="/insights" className="hover:text-indigo-600">Insights</Link>
+            <Link to="/settings" className="hover:text-indigo-600">Settings</Link>
+          </nav>
+        </div>
+        <div className="flex items-center gap-3">
+          <button onClick={() => nav('/settings')} className="rounded-full p-2 hover:bg-slate-100 dark:hover:bg-slate-800" title="Settings">
+            ⚙️
+          </button>
+          <button onClick={logout} className="rounded-full p-2 hover:bg-slate-100 dark:hover:bg-slate-800" title="Logout">
+            ⎋
+          </button>
+          <div className="h-8 w-8 rounded-full bg-gradient-to-br from-indigo-600 to-teal-400" title={email || 'Profile'} />
+        </div>
+      </div>
+    </header>
+  );
+}
+
+5) src/components/layout/AuthGuard.tsx
+import React from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { fetchAuthStatus, hasAnyConnection, isOnboardingDone } from '../../lib/auth';
+
+export default function AuthGuard({ children }: { children: React.ReactNode }) {
+  const [ready, setReady] = React.useState(false);
+  const [authed, setAuthed] = React.useState(false);
+  const [connected, setConnected] = React.useState(false);
+  const nav = useNavigate();
+  const loc = useLocation();
+
+  React.useEffect(() => {
+    (async () => {
+      const status = await fetchAuthStatus();
+      const isAuthed = !!status?.authenticated;
+      setAuthed(isAuthed);
+      const hasConn = hasAnyConnection(status);
+      setConnected(hasConn);
+
+      // Routing rules:
+      // Not authed → keep them on marketing site (do not force redirect here)
+      if (!isAuthed) { setReady(true); return; }
+
+      // Authed:
+      const onboarded = isOnboardingDone();
+
+      if (!onboarded && !loc.pathname.startsWith('/onboarding')) {
+        nav('/onboarding', { replace: true });
+      } else if (onboarded && !hasConn && !loc.pathname.startsWith('/connect')) {
+        nav('/connect', { replace: true });
+      } else if (onboarded && hasConn && loc.pathname === '/signin') {
+        nav('/dashboard', { replace: true });
+      }
+
+      setReady(true);
+    })();
+  }, [nav, loc.pathname]);
+
+  if (!ready) return null;
+  return <>{children}</>;
+}
+
+6) src/pages/Onboarding.tsx
+import React from 'react';
+import { saveOnboarding } from '../lib/api';
+import { rememberOnboardingDone } from '../lib/auth';
+import { useNavigate } from 'react-router-dom';
+
+const INDUSTRIES = ['Retail', 'Real Estate', 'Services', 'Education', 'E-commerce', 'Other'];
+const ROLES = ['Owner', 'Marketer', 'Analyst', 'Consultant', 'Other'];
+const PURPOSES = ['Track results', 'Compare channels', 'Get AI insights', 'Client reporting'];
+
+export default function Onboarding() {
+  const nav = useNavigate();
+  const [industry, setIndustry] = React.useState('');
+  const [role, setRole] = React.useState('');
+  const [purpose, setPurpose] = React.useState('');
+  const [loading, setLoading] = React.useState(false);
+
+  async function onSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setLoading(true);
+    await saveOnboarding({ industry, role, purpose });
+    rememberOnboardingDone();
+    setLoading(false);
+    nav('/connect');
+  }
+
+  return (
+    <div className="min-h-[70vh] py-12 px-4">
+      <div className="mx-auto max-w-2xl">
+        <h1 className="text-2xl font-semibold mb-2">Let’s tailor your experience</h1>
+        <p className="text-slate-600 mb-6">Answer a few quick questions so we can personalize insights.</p>
+        <form onSubmit={onSubmit} className="space-y-5">
+          <Select label="Industry" value={industry} setValue={setIndustry} options={INDUSTRIES} />
+          <Select label="Your role" value={role} setValue={setRole} options={ROLES} />
+          <Select label="What’s your goal?" value={purpose} setValue={setPurpose} options={PURPOSES} />
+          <button disabled={loading || !industry || !role || !purpose}
+            className="w-full rounded-lg bg-gradient-to-r from-indigo-600 to-teal-400 py-2.5 font-semibold text-white disabled:opacity-60">
+            {loading ? 'Saving…' : 'Continue'}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function Select({ label, value, setValue, options }:{label:string; value:string; setValue:(v:string)=>void; options:string[]}) {
+  return (
+    <label className="block">
+      <span className="text-sm text-slate-700">{label}</span>
+      <select className="mt-1 w-full rounded-lg border border-slate-300 p-2"
+        value={value} onChange={e=>setValue(e.target.value)} required>
+        <option value="" disabled>Select…</option>
+        {options.map(o => <option key={o} value={o}>{o}</option>)}
+      </select>
+    </label>
+  );
+}
+
+7) src/pages/Dashboard.tsx
+import React from 'react';
+import { getConnectionsSummary } from '../lib/api';
+
+export default function Dashboard() {
+  const [summary, setSummary] = React.useState<{total:number, providers:any}>({ total:0, providers:{} });
+
+  React.useEffect(() => { (async()=>{ setSummary(await getConnectionsSummary()); })(); }, []);
+
+  return (
+    <div className="px-4 py-6 mx-auto max-w-7xl">
+      <h1 className="text-2xl font-semibold mb-6">Dashboard</h1>
+
+      {/* KPI cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        <KPI title="Connected Sources" value={summary.total} />
+        <KPI title="Sessions (GA4)" value="12,430" />
+        <KPI title="Ad Spend (Meta)" value="$3,270" />
+        <KPI title="IG Engagement" value="4.8%" />
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Correlation chart */}
+        <div className="lg:col-span-2 rounded-2xl border border-slate-200 dark:border-slate-800 p-4">
+          <h2 className="font-medium mb-2">Correlation: GA4 Sessions vs Meta Ad Spend</h2>
+          <MockLineChart />
+        </div>
+
+        {/* AI Insights */}
+        <div className="rounded-2xl border border-slate-200 dark:border-slate-800 p-4">
+          <h2 className="font-medium mb-2">AI Insights</h2>
+          <ul className="space-y-2 text-sm text-slate-700 dark:text-slate-200">
+            <li>• Sessions rose after ad spend increases on 3 of 5 recent days.</li>
+            <li>• Consider increasing budget on Tue/Thu when IG engagement peaks.</li>
+            <li>• Landing page /pricing drove 32% of conversions this week.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function KPI({ title, value }:{title:string; value:string|number}) {
+  return (
+    <div className="rounded-2xl border border-slate-200 dark:border-slate-800 p-4">
+      <div className="text-sm text-slate-500">{title}</div>
+      <div className="text-xl font-semibold">{value}</div>
+    </div>
+  );
+}
+
+// Simple mock 2-series chart (no libs)
+function MockLineChart() {
+  return (
+    <div className="h-56 w-full bg-gradient-to-b from-slate-50 to-white dark:from-slate-900 dark:to-slate-950 rounded-xl border border-slate-100 dark:border-slate-800 flex items-center justify-center text-slate-500">
+      <span className="text-sm">Line chart placeholder (Sessions vs Spend)</span>
+    </div>
+  );
+}
+
+8) src/pages/Settings.tsx
+import React from 'react';
+import { useTheme } from '../state/theme';
+
+export default function Settings() {
+  const { theme, toggle } = useTheme();
+
+  return (
+    <div className="px-4 py-6 mx-auto max-w-3xl">
+      <h1 className="text-2xl font-semibold mb-6">Settings</h1>
+      <div className="rounded-2xl border border-slate-200 dark:border-slate-800 p-4 space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="font-medium">Theme</div>
+            <div className="text-sm text-slate-500">Switch between light and dark mode</div>
+          </div>
+          <button onClick={toggle} className="rounded-lg px-3 py-2 bg-slate-100 dark:bg-slate-800">
+            {theme === 'dark' ? 'Use Light' : 'Use Dark'}
+          </button>
+        </div>
+        <div className="border-t border-slate-200 dark:border-slate-800 pt-4 text-sm">
+          <a href="/billing" className="text-indigo-600">Manage plan & payment</a>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+9) Update router in src/App.tsx
+
+Mount ThemeProvider and AuthGuard.
+
+Add routes: /onboarding, /dashboard, /settings, /insights (placeholder), /connect (existing).
+
+Render AppTopNav only when authenticated (use a small useAuthStatus hook inline or reuse fetchAuthStatus() once at layout).
+
+Also hide the public “Connections” link:
+If your marketing nav is shared, wrap that item with an auth check; otherwise, remove the public link entirely and keep Connections only in the app nav.
+
+Example snippet to conditionally show public nav items:
+
+// In public/marketing nav component
+// Remove hard-coded "Connections" item OR:
+{ /* {isAuthed ? <Link to="/connect">Connections</Link> : null} */ }
+
+Final Steps & Checks
+
+Remove/Hide “Connections” from the public (marketing) nav.
+
+After a successful login:
+
+If onboarding not completed → redirect to /onboarding.
+
+After saving onboarding → redirect to /connect.
+
+Only after at least one provider connected → navigating to /dashboard is allowed (AuthGuard routes them otherwise).
+
+App navbar appears for authenticated routes only; marketing nav remains for public pages.
+
+Settings page toggles dark/light and persists to localStorage.
+
+Dashboard scaffold shows KPI placeholders, correlation chart placeholder, and AI insights cards.
+
+Acceptance Criteria
+
+Logging in lands on /onboarding (first time), then /connect, then /dashboard once ≥1 connection exists.
+
+“Connections” link no longer appears on public marketing pages for logged-out users.
+
+App top nav (Dashboard, Connections, Insights, Settings) shows only when authenticated.
+
+Theme toggle works and persists.
+
+No console errors in dev; npm run build passes.
+
+Note for backend alignment: If /v1/onboarding doesn’t exist yet, the frontend won’t block—answers are stored locally so we can ship UX now and wire to Supabase/DB later.
