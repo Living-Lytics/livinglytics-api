@@ -58,9 +58,9 @@ export default function Connect() {
     }
   };
 
-  const handleInstagramConnect = () => {
+  const handleInstagramConnect = async () => {
     try {
-      startInstagramConnect();
+      await startInstagramConnect();
     } catch (err) {
       toast({
         variant: 'destructive',

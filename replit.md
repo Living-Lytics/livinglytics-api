@@ -73,6 +73,7 @@ The API provides endpoints for:
 - **Google OAuth / GA4 Integration**: OAuth flow initiation and callback, connection status, listing GA4 properties, and saving selected GA4 properties.
 - **GA4 Data Sync**: Auto-backfill (30 days) on first property save. Admin-protected endpoint to manually trigger GA4 data synchronization.
 - **Instagram OAuth Integration**: OAuth flow initiation via Facebook OAuth dialog and callback with automatic long-lived token exchange (60 days via Facebook Graph API).
+- **Instagram OAuth Flow**: Frontend calls `/v1/auth/instagram/start` with Authorization header (fetch API), receives OAuth URL, then navigates to it; backend `/v1/auth/instagram/start` returns JSON with `url` field instead of redirecting to support Bearer token authentication.
 - **Instagram Token Refresh**: Automatic refresh when token expires within 7 days, admin-protected manual refresh endpoint.
 - **Instagram Data Sync**: Auto-backfill (30 days) on first connection for reach and engagement metrics. Admin-protected endpoint for manual sync.
 - **Email Digests**: Sending personalized weekly digests to users, admin-triggered scheduled runs, previewing digests, testing, status monitoring, scheduling info, and unsubscribe functionality.

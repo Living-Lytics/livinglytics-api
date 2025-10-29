@@ -253,12 +253,12 @@ async def instagram_oauth_start(
     email: str = Depends(get_current_user_email)
 ):
     """
-    Alias for Instagram OAuth flow that redirects to the main connections endpoint.
-    This provides API consistency with the Google OAuth pattern.
+    Get Instagram OAuth URL. Frontend must call this with Authorization header,
+    then navigate to the returned URL.
     """
     from urllib.parse import urlencode
-    redirect_url = f"/v1/connections/instagram/init?{urlencode({'email': email})}"
-    return RedirectResponse(url=redirect_url)
+    init_url = f"/v1/connections/instagram/init?{urlencode({'email': email})}"
+    return {"url": init_url}
 
 
 @router.get("/instagram/callback")
