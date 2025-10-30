@@ -19,10 +19,6 @@ author = "agent"
 task = "workflow.run"
 args = "Backend API"
 
-[[workflows.workflow.tasks]]
-task = "workflow.run"
-args = "Marketing Site"
-
 [[workflows.workflow]]
 name = "Backend API"
 author = "agent"
@@ -34,18 +30,6 @@ waitForPort = 8080
 
 [workflows.workflow.metadata]
 outputType = "console"
-
-[[workflows.workflow]]
-name = "Marketing Site"
-author = "agent"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "cd living-lytics-marketing && npm run dev"
-waitForPort = 5000
-
-[workflows.workflow.metadata]
-outputType = "webview"
 
 [[ports]]
 localPort = 5000
@@ -65,4 +49,4 @@ externalPort = 3001
 
 [deployment]
 deploymentTarget = "autoscale"
-run = ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "5000"]
+run = ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
