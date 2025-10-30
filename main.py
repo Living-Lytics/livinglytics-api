@@ -90,15 +90,17 @@ ALLOW_ORIGINS = [
     "https://livinglytics.base44.app",
     "https://preview--livinglytics.base44.app",  # Base44 preview domain
     "https://livinglytics.com",
+    "https://www.livinglytics.com",
     "http://localhost:5173",
 ]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOW_ORIGINS,
-    allow_credentials=False,
-    allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["X-Request-ID"],
 )
 
 # Mount auth router
