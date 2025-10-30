@@ -98,6 +98,30 @@ Database schema additions for authentication:
 ### Configuration
 The backend API runs on `0.0.0.0:8080`. The marketing site runs on `0.0.0.0:5000` (Replit webview port). CORS is restricted to `livinglytics.base44.app`, `preview--livinglytics.base44.app`, `livinglytics.com`, and `localhost:5173`. Environment variables manage database connections, Supabase keys, FastAPI secrets, Resend API keys, and Google OAuth credentials. Structured JSON logging is implemented with optional Sentry integration and thread-safe in-memory rate limiting for admin endpoints.
 
+### Production Deployment (Option B: Separate API Subdomain)
+The production deployment uses a dual-domain architecture for optimal performance and separation of concerns:
+
+**Domain Structure:**
+- **livinglytics.com** - Frontend (Marketing Site + App) deployed as Autoscale on Replit
+- **api.livinglytics.com** - Backend API deployed separately as Autoscale on Replit
+
+**Environment Variables (Production):**
+- Backend: `FRONTEND_URL=https://livinglytics.com`, `GOOGLE_REDIRECT_URI=https://api.livinglytics.com/v1/auth/google/callback`, `META_OAUTH_REDIRECT=https://api.livinglytics.com/v1/connections/instagram/callback`
+- Frontend: `VITE_API_BASE=https://api.livinglytics.com` (no Vite proxy in production)
+
+**OAuth Provider Configuration:**
+- Google Cloud Console: Authorized redirect URI `https://api.livinglytics.com/v1/auth/google/callback`
+- Meta for Developers: Valid OAuth Redirect URI `https://api.livinglytics.com/v1/connections/instagram/callback`
+
+**Deployment Steps:**
+1. Deploy Backend API as Autoscale, link api.livinglytics.com custom domain
+2. Deploy Marketing Site as Autoscale, link livinglytics.com custom domain
+3. Configure DNS A and TXT records at domain registrar for both domains
+4. Update OAuth providers with production redirect URIs
+5. Verify all flows work end-to-end
+
+See `DEPLOYMENT_GUIDE.md` for detailed step-by-step instructions.
+
 ## External Dependencies
 - **Supabase PostgreSQL**: Primary database.
 - **GitHub API**: For user and repository data, via Replit GitHub Connector.
