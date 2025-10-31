@@ -134,7 +134,7 @@ async def google_oauth_start(next: Optional[str] = Query(None)):
         raise HTTPException(status_code=500, detail="Google OAuth not configured")
     
     if not next:
-        next = f"{FRONTEND_URL}/onboarding"
+        next = "https://www.livinglytics.com/onboarding"
     
     state_data = {"next": next}
     state_encoded = base64.urlsafe_b64encode(json.dumps(state_data).encode()).decode()
@@ -161,7 +161,7 @@ async def google_oauth_callback(
 ):
     import httpx
     
-    next_url = f"{FRONTEND_URL}/onboarding"
+    next_url = "https://www.livinglytics.com/onboarding"
     if state:
         try:
             state_decoded = base64.urlsafe_b64decode(state.encode()).decode()
@@ -232,10 +232,23 @@ async def google_oauth_callback(
             
             app_token = create_access_token(user.email, str(user.id))
             
-            logger.info(f"User authenticated via Google: {email}, redirecting to: {next_url}")
+            response = RedirectResponse(url=next_url, status_code=302)
+            response.set_cookie(
+                key="ll_session",
+                value=app_token,
+                domain=".livinglytics.com",
+                path="/",
+                secure=True,
+                httponly=True,
+                samesite="none",
+                max_age=60*60*24*30
+            )
             
-            redirect_url = f"{next_url}?token={app_token}&status=success"
-            return RedirectResponse(url=redirect_url, status_code=302)
+            logger.info(f"[OAUTH-SUCCESS] User authenticated via Google: {email}")
+            logger.info(f"[OAUTH-SUCCESS] Cookie set: domain=.livinglytics.com, path=/, secure=True, httponly=True, samesite=none, max_age=2592000")
+            logger.info(f"[OAUTH-SUCCESS] Redirecting to: {next_url}")
+            
+            return response
     
     except Exception as e:
         logger.error(f"Google OAuth callback error: {e}")

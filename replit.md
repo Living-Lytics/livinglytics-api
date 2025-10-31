@@ -30,7 +30,7 @@ Living Lytics API is a production-ready analytics engine and data integration pl
 - **OAuth Replace Navigation**: ConnectCallback uses replace navigation to prevent back-button re-triggering of OAuth flow
 - **Theme support**: Light/dark mode toggle in Settings page, persisted to localStorage, applied via Tailwind dark: classes
 - **App vs Marketing navigation**: AppTopNav shows for authenticated app routes (/dashboard, /connect, /settings, /insights, /onboarding); marketing nav shows for public pages without "Connections" link
-- **Google OAuth redirects**: Backend uses state parameter to encode next URL (defaults to /onboarding); supports ?next= parameter on /v1/auth/google/start; callback redirects to decoded next URL with token and status parameters
+- **Google OAuth with cookies**: Backend uses state parameter to encode next URL (defaults to https://www.livinglytics.com/onboarding); supports ?next= parameter on /v1/auth/google/start; callback sets HttpOnly cookie (domain=.livinglytics.com, SameSite=None, Secure) and 302 redirects to next URL
 - **JWT Bearer Authentication**: All API requests use Authorization: Bearer headers with JWT tokens stored in localStorage (ll_token key)
 - **/v1/auth/status tolerant**: Returns 200 with authenticated:false for unauthenticated users (no token) instead of 403, properly rejects invalid/expired tokens with 401
 - **Onboarding redirect after OAuth**: First-time Google OAuth users automatically redirected to /onboarding before accessing other app routes
