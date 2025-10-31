@@ -33,6 +33,7 @@ from scheduler_utils import (
     PT
 )
 from auth.router import router as auth_router
+from auth.security import get_current_user_email_optional
 
 # Configure structured logging with JSON format
 logging.basicConfig(
@@ -389,11 +390,28 @@ def ingest_metrics(request: MetricIngestRequest, db: Session = Depends(get_db)):
     db.commit()
     return {"ingested": len(ingested_metrics), "metrics": ingested_metrics}
 
-@app.get("/v1/dashboard/tiles", dependencies=[Depends(require_api_key)])
-def tiles(email: str, db: Session = Depends(get_db)):
+@app.get("/v1/dashboard/tiles")
+def tiles(request: Request, email: str, db: Session = Depends(get_db)):
+    # Get authenticated user from session cookie
+    authenticated_email = get_current_user_email_optional(request)
+    
+    if not authenticated_email:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    # Verify the authenticated user matches the requested email (security check)
+    if authenticated_email != email:
+        raise HTTPException(status_code=403, detail="Cannot access another user's data")
+    
     user = db.execute(select(User).where(User.email == email)).scalar_one_or_none()
+    
+    # If user doesn't exist but is authenticated, return zeros (graceful handling)
     if not user:
-        raise HTTPException(404, "User not found")
+        return {
+            "ig_sessions": 0.0,
+            "ig_conversions": 0.0,
+            "ig_reach": 0.0,
+            "ig_engagement": 0.0,
+        }
     
     # Get list of connected data sources
     connected_sources = db.execute(
