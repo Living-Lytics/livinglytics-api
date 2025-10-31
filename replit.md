@@ -96,7 +96,7 @@ Database schema additions for authentication:
 - `users.google_sub`: TEXT column storing Google OAuth user identifier (nullable)
 
 ### Configuration
-The backend API runs on `0.0.0.0:8080`. The marketing site runs on `0.0.0.0:5000` (Replit webview port). CORS is restricted to `livinglytics.base44.app`, `preview--livinglytics.base44.app`, `livinglytics.com`, and `localhost:5173`. Environment variables manage database connections, Supabase keys, FastAPI secrets, Resend API keys, and Google OAuth credentials. Structured JSON logging is implemented with optional Sentry integration and thread-safe in-memory rate limiting for admin endpoints.
+The backend API runs on `0.0.0.0:8080`. The marketing site runs on `0.0.0.0:5000` (Replit webview port). CORS is configured to allow credentials with specific origins (`livinglytics.com`, `www.livinglytics.com`, `localhost:5173`) and pattern matching for all Replit dev domains (`*.replit.dev`). Environment variables manage database connections, Supabase keys, FastAPI secrets, Resend API keys, and Google OAuth credentials. Structured JSON logging is implemented with optional Sentry integration and thread-safe in-memory rate limiting for admin endpoints.
 
 ### Production Deployment (Option B: Separate API Subdomain)
 The production deployment uses a dual-domain architecture for optimal performance and separation of concerns:

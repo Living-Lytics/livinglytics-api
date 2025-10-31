@@ -94,12 +94,14 @@ ALLOW_ORIGINS = [
     "http://localhost:5173",
 ]
 
+# CORS middleware with support for Replit domains (*.replit.dev)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOW_ORIGINS,
+    allow_origin_regex=r"https://.*\.replit\.dev",  # Match all Replit dev domains
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "X-Request-ID"],
     expose_headers=["X-Request-ID"],
 )
 
