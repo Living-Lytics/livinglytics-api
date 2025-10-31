@@ -35,6 +35,10 @@ outputType = "console"
 localPort = 8080
 externalPort = 80
 
+[[ports]]
+localPort = 46231
+externalPort = 3000
+
 
 [deployment]
 deploymentTarget = "autoscale"

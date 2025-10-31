@@ -17,7 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from urllib.parse import urlencode
 from pydantic import BaseModel, Field, EmailStr
-from sqlalchemy import select, func, text, cast, DATE
+from sqlalchemy import select, func, text, cast, DATE, delete
 from sqlalchemy.orm import Session
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -395,11 +395,27 @@ def tiles(email: str, db: Session = Depends(get_db)):
     if not user:
         raise HTTPException(404, "User not found")
     
+    # Get list of connected data sources
+    connected_sources = db.execute(
+        select(DataSource.source_name).where(DataSource.user_id == user.id)
+    ).scalars().all()
+    
+    # If no sources connected, return zeros
+    if not connected_sources:
+        return {
+            "ig_sessions": 0.0,
+            "ig_conversions": 0.0,
+            "ig_reach": 0.0,
+            "ig_engagement": 0.0,
+        }
+    
+    # Only aggregate metrics from connected sources
     def agg(name: str):
         return db.execute(
             select(func.coalesce(func.sum(Metric.metric_value), 0)).where(
                 Metric.user_id == user.id,
-                Metric.metric_name == name
+                Metric.metric_name == name,
+                Metric.source_name.in_(connected_sources)
             )
         ).scalar() or 0
     
@@ -1870,6 +1886,46 @@ def seed_email_events(
         "email": body.email,
         "events_inserted": events_inserted,
         "period": {"start": start, "end": end},
+        "status": "success"
+    }
+
+@app.delete("/v1/dev/delete-demo-metrics", include_in_schema=False)
+def delete_demo_metrics(
+    request: Request,
+    email: str,
+    authorization: str = Header(...),
+    db: Session = Depends(get_db)
+):
+    """Delete all demo/seed metrics for a user.
+    
+    Requires ADMIN_TOKEN. Hidden from OpenAPI schema.
+    """
+    # Verify admin token
+    token = authorization.replace("Bearer ", "")
+    if token != ADMIN_TOKEN:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    # Resolve user
+    user = db.execute(select(User).where(User.email == email)).scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail=f"User not found: {email}")
+    
+    # Delete all metrics with source_name='demo'
+    result = db.execute(
+        delete(Metric).where(
+            Metric.user_id == user.id,
+            Metric.source_name == "demo"
+        )
+    )
+    
+    deleted_count = result.rowcount
+    db.commit()
+    
+    logging.info(f"[DELETE DEMO METRICS] Deleted {deleted_count} demo metrics for user={email}")
+    
+    return {
+        "email": email,
+        "deleted_count": deleted_count,
         "status": "success"
     }
 
