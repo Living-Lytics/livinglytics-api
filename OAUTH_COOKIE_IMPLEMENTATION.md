@@ -142,7 +142,7 @@ No environment variables needed for OAuth! The frontend just needs to redirect t
 ✅ **HttpOnly Cookie** - JavaScript can't access the token (prevents XSS attacks)
 ✅ **Secure Flag** - Cookie only sent over HTTPS
 ✅ **SameSite=None** - Works across domains (api.livinglytics.com → livinglytics.com)
-✅ **Domain=.livinglytics.com** - Cookie works for both www and non-www
+✅ **Domain=.livinglytics.com** - Cookie works for both www and non-www subdomains
 ✅ **30-day expiry** - Auto-logout after 30 days
 
 ## Migration Notes
