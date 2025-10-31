@@ -1527,7 +1527,7 @@ def debug_google_check(email: str = Query(..., min_length=3), db: Session = Depe
         google_source = db.execute(
             select(DataSource).where(
                 DataSource.user_id == user.id,
-                DataSource.source_name == "google"
+                DataSource.source_name == "google_analytics"
             ).order_by(DataSource.id.desc())
         ).scalars().first()
         
@@ -2054,7 +2054,7 @@ def google_oauth_callback(code: str, state: str, db: Session = Depends(get_db)):
     existing = db.execute(
         select(DataSource).where(
             DataSource.user_id == user_result.id,
-            DataSource.source_name == "google"
+            DataSource.source_name == "google_analytics"
         )
     ).scalar_one_or_none()
     
@@ -2065,19 +2065,19 @@ def google_oauth_callback(code: str, state: str, db: Session = Depends(get_db)):
         existing.expires_at = expires_at
         existing.account_ref = email
         existing.updated_at = datetime.now()
-        logging.info(f"[OAUTH] Google connection updated for user={email}")
+        logging.info(f"[OAUTH] Google Analytics connection updated for user={email}")
     else:
         # Create new data source
         new_source = DataSource(
             user_id=user_result.id,
-            source_name="google",
+            source_name="google_analytics",
             account_ref=email,
             access_token=access_token,
             refresh_token=refresh_token,
             expires_at=expires_at
         )
         db.add(new_source)
-        logging.info(f"[OAUTH] Google connected for user={email}")
+        logging.info(f"[OAUTH] Google Analytics connected for user={email}")
     
     try:
         db.commit()
@@ -2763,14 +2763,14 @@ def list_google_properties(email: str, db: Session = Depends(get_db)):
     data_source = db.execute(
         select(DataSource).where(
             DataSource.user_id == user_result.id,
-            DataSource.source_name == "google"
+            DataSource.source_name == "google_analytics"
         )
     ).scalar_one_or_none()
     
     if not data_source:
         raise HTTPException(
             status_code=404,
-            detail="Google account not connected. Please connect via /v1/connections/google/init"
+            detail="Google Analytics account not connected. Please connect via /v1/connections/google/init"
         )
     
     # Refresh token if needed
@@ -2927,15 +2927,15 @@ def run_ga4_sync_internal(user: User, db: Session, days: int = 1) -> dict:
     data_source = db.execute(
         select(DataSource).where(
             DataSource.user_id == user.id,
-            DataSource.source_name == "google"
+            DataSource.source_name == "google_analytics"
         )
     ).scalar_one_or_none()
     
     if not data_source:
-        logging.error(f"[SYNC] No Google OAuth connection for user={user.email}")
+        logging.error(f"[SYNC] No Google Analytics OAuth connection for user={user.email}")
         raise HTTPException(
             status_code=404,
-            detail="Google account not connected"
+            detail="Google Analytics account not connected"
         )
     
     # Refresh token if needed
