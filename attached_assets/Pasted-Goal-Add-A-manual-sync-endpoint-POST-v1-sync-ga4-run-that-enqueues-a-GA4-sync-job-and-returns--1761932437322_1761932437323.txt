@@ -1,0 +1,175 @@
+Goal: Add:
+
+A manual sync endpoint (POST /v1/sync/ga4/run) that enqueues a GA4 sync job and returns job_id.
+
+A job status endpoint (GET /v1/sync/ga4/job/{job_id}).
+
+A meta endpoint (GET /v1/sync/ga4/meta) returning last/next times.
+
+A daily scheduled sync at 00:15 America/Los_Angeles (use APScheduler with zoneinfo), plus a safe external backup option via UptimeRobot hitting /v1/sync/ga4/daily.
+
+Assumptions:
+
+We already have OAuth tokens for Google saved per user.
+
+There is a GA4 ingestion function (create it if missing) ingest_ga4_for_all_accounts(since_days=2) that:
+
+fetches from GA4 Data API
+
+upserts into our DB
+
+returns summary (rows ingested, properties touched).
+
+DB: Postgres (Supabase) available via SQLAlchemy.
+
+Do this:
+
+Install deps
+
+pip install APScheduler python-dateutil google-analytics-data zoneinfo
+(On Python 3.9+, use from zoneinfo import ZoneInfo)
+
+DB migration: create jobs table
+
+Create/Run SQL (via Alembic or raw execute):
+
+create table if not exists ga4_sync_jobs (
+  id uuid primary key default gen_random_uuid(),
+  created_at timestamptz not null default now(),
+  started_at timestamptz,
+  finished_at timestamptz,
+  status text not null default 'pending', -- pending|running|success|failed
+  scope text not null default 'all',      -- 'all' or user_id
+  requested_by uuid,                      -- nullable; if user-triggered
+  message text,
+  last_sync_at timestamptz,
+  lock_key text,                          -- optional singleton lock
+  unique(lock_key)
+);
+
+
+Also add (if not present) a simple settings table:
+
+create table if not exists app_settings (
+  key text primary key,
+  value jsonb,
+  updated_at timestamptz not null default now()
+);
+
+
+Store last successful run under key ga4_last_success.
+
+Service layer (services/ga4_sync.py)
+
+Functions:
+
+start_job(scope='all', requested_by=None, lock_key=None) -> job_id
+
+Insert row status pending, set lock_key='ga4_daily' for daily job to prevent duplicates.
+
+run_job(job_id):
+
+Update status='running', started_at=now()
+
+Call ingest_ga4_for_all_accounts(since_days=2) (or the existing ingestion)
+
+On success: set status='success', finished_at=now(), last_sync_at=now(), update app_settings('ga4_last_success')
+
+On error: set status='failed', message
+
+get_job(job_id)
+
+get_meta() → { last_sync_at, next_scheduled_at, timezone: 'America/Los_Angeles' }
+
+Use a DB-level unique lock_key to avoid double daily runs. If insert fails on unique lock, return the existing running job.
+
+Scheduler (main.py or infrastructure/scheduler.py)
+
+Initialize APScheduler BackgroundScheduler(timezone=ZoneInfo("America/Los_Angeles"))
+
+Add job: run daily at 00:15:
+
+scheduler.add_job(run_daily_ga4, 'cron', hour=0, minute=15, id='ga4_daily', replace_existing=True)
+
+
+run_daily_ga4():
+
+Try start_job(scope='all', lock_key='ga4_daily')
+
+If created, run_job(job_id) (synchronously is fine since it’s a background scheduler thread).
+
+Note: Replit may restart occasionally. Keep the scheduler in app startup (@app.on_event("startup")) and log a message. As a backup, also expose an HTTP endpoint below and ping with UptimeRobot nightly.
+
+Endpoints (FastAPI)
+
+POST /v1/sync/ga4/run
+
+Auth required
+
+Creates a job with scope='all', requested_by=current_user_id
+
+Spawns a background task (BackgroundTasks) to run_job(job_id)
+
+Returns { job_id } and 202 Accepted
+
+GET /v1/sync/ga4/job/{job_id}
+
+Returns job record { status, message, last_sync_at }
+
+GET /v1/sync/ga4/meta
+
+Returns { last_sync_at, next_scheduled_at, timezone }
+
+GET /v1/sync/ga4/daily
+
+No auth (or protect with a secret token header)
+
+Tries to create lock_key='ga4_daily' job and runs it in background
+
+Returns { job_id } or { status: 'already-running' }
+
+All endpoints must be CORS-enabled for your frontend domains.
+
+Idempotency & locking
+
+Use the lock_key unique index for daily jobs to prevent duplicates.
+
+Manual “Sync Now” has no lock, but if a daily job is running, return a 409 with a friendly message to the frontend.
+
+GA4 ingestion stub (if needed)
+
+Create ingest_ga4_for_all_accounts(since_days=2) that:
+
+For each connected GA4 property:
+
+Pull last 48h to capture late-arriving events
+
+Respect Google API quotas/rate limits
+
+Upsert to your events/metrics tables
+
+Return a summary string for the job message.
+
+Security
+
+If exposing /v1/sync/ga4/daily for UptimeRobot, require a header like X-CRON-TOKEN=${CRON_TOKEN} and check CRON_TOKEN env var.
+
+Return 403 if token missing/invalid.
+
+Acceptance Criteria
+
+Scheduler logs show a run at ~12:15 AM America/Los_Angeles.
+
+/v1/sync/ga4/meta shows updated last_sync_at after daily or manual run.
+
+Manual POST /v1/sync/ga4/run returns job_id and completes with success.
+
+Concurrent run attempts are safely rejected or queued without duplicate daily jobs.
+
+Env Vars to set (Replit Secrets)
+
+DATABASE_URL
+
+CRON_TOKEN (random long string)
+
+(existing Google OAuth/GA4 vars as your app requires)
