@@ -86,18 +86,29 @@ On successful authentication, the backend logs:
 
 ### Reading the Cookie
 
-The frontend needs to read the cookie to check authentication status. Since it's HttpOnly, it can't be accessed via JavaScript, so you'll need to:
+The backend automatically reads authentication from both sources:
 
-**Option 1: Send cookie with API requests**
+**✅ Cookie-based authentication (primary)**
 ```javascript
 // Browser automatically includes cookies in requests to api.livinglytics.com
 fetch('https://api.livinglytics.com/v1/auth/status', {
   credentials: 'include'  // Include cookies in request
 })
+// Backend reads from ll_session cookie
 ```
 
-**Option 2: Update /v1/auth/status to read from cookie**
-The backend can read the `ll_session` cookie in the `/v1/auth/status` endpoint instead of expecting a Bearer token.
+**✅ Bearer token authentication (fallback)**
+```javascript
+// Still works for email/password login
+fetch('https://api.livinglytics.com/v1/auth/status', {
+  headers: {
+    'Authorization': `Bearer ${token}`
+  }
+})
+// Backend reads from Authorization header
+```
+
+The `/v1/auth/status` endpoint checks cookies first, then falls back to Authorization headers.
 
 ### Initiating OAuth
 

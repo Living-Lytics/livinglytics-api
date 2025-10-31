@@ -55,13 +55,23 @@ from typing import Optional
 from fastapi import Request
 
 def get_current_user_email_optional(request: Request) -> str | None:
-    """Optional authentication - returns None if no token provided, raises 401 for invalid tokens."""
-    auth_header = request.headers.get("Authorization")
-    if not auth_header or not auth_header.startswith("Bearer "):
+    """Optional authentication - checks both Bearer token and cookie, returns None if no token provided, raises 401 for invalid tokens."""
+    token = None
+    
+    # First, try to get token from cookie
+    cookie_token = request.cookies.get("ll_session")
+    if cookie_token:
+        token = cookie_token
+    else:
+        # Fall back to Authorization header
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            token = auth_header.split(" ")[1]
+    
+    if not token:
         return None
     
-    # Token provided - must be valid
-    token = auth_header.split(" ")[1]
+    # Token provided (from cookie or header) - must be valid
     payload = decode_token(token)  # This will raise HTTPException for invalid/expired tokens
     return payload.get("sub")
 

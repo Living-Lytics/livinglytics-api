@@ -32,7 +32,7 @@ Living Lytics API is a production-ready analytics engine and data integration pl
 - **App vs Marketing navigation**: AppTopNav shows for authenticated app routes (/dashboard, /connect, /settings, /insights, /onboarding); marketing nav shows for public pages without "Connections" link
 - **Google OAuth with cookies**: Backend uses state parameter to encode next URL (defaults to https://www.livinglytics.com/onboarding); supports ?next= parameter on /v1/auth/google/start; callback sets HttpOnly cookie (domain=.livinglytics.com, SameSite=None, Secure) and 302 redirects to next URL
 - **JWT Bearer Authentication**: All API requests use Authorization: Bearer headers with JWT tokens stored in localStorage (ll_token key)
-- **/v1/auth/status tolerant**: Returns 200 with authenticated:false for unauthenticated users (no token) instead of 403, properly rejects invalid/expired tokens with 401
+- **/v1/auth/status tolerant**: Returns 200 with authenticated:false for unauthenticated users (no token) instead of 403, properly rejects invalid/expired tokens with 401; reads authentication from both `ll_session` cookie (priority) and Authorization Bearer header (fallback)
 - **Onboarding redirect after OAuth**: First-time Google OAuth users automatically redirected to /onboarding before accessing other app routes
 - **Vite proxy configuration**: Proxies both /api/* and /v1/* to backend for dev environment OAuth callback handling
 - **Structured logging** with user_id, period, and status for digest operations
