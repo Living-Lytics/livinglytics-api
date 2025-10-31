@@ -1,7 +1,10 @@
 import os
 import logging
 import uuid
-from fastapi import APIRouter, Depends, HTTPException, Response, Request
+import base64
+import json
+from typing import Optional
+from fastapi import APIRouter, Depends, HTTPException, Response, Request, Query
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -15,8 +18,11 @@ router = APIRouter(prefix="/v1/auth", tags=["Authentication"])
 
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
-GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "http://localhost:8080/v1/auth/google/callback")
+GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "https://api.livinglytics.com/v1/auth/google/callback")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5000")
+
+logger.info(f"[OAUTH-CONFIG] GOOGLE_REDIRECT_URI={GOOGLE_REDIRECT_URI}")
+logger.info(f"[OAUTH-CONFIG] Add this to Google Cloud Console > Credentials > OAuth 2.0 Client > Authorized redirect URIs: {GOOGLE_REDIRECT_URI}")
 
 
 @router.post("/register", response_model=AuthResponse)
@@ -123,9 +129,15 @@ async def get_auth_status(
 
 
 @router.get("/google/start")
-async def google_oauth_start():
+async def google_oauth_start(next: Optional[str] = Query(None)):
     if not GOOGLE_CLIENT_ID:
         raise HTTPException(status_code=500, detail="Google OAuth not configured")
+    
+    if not next:
+        next = f"{FRONTEND_URL}/onboarding"
+    
+    state_data = {"next": next}
+    state_encoded = base64.urlsafe_b64encode(json.dumps(state_data).encode()).decode()
     
     auth_url = (
         f"https://accounts.google.com/o/oauth2/v2/auth"
@@ -135,20 +147,34 @@ async def google_oauth_start():
         f"&scope=openid%20email%20profile"
         f"&access_type=offline"
         f"&prompt=consent"
+        f"&state={state_encoded}"
     )
     
     return RedirectResponse(url=auth_url)
 
 
 @router.get("/google/callback")
-async def google_oauth_callback(code: str, db: Session = Depends(get_db)):
+async def google_oauth_callback(
+    code: str,
+    state: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
     import httpx
     
-    logger.info(f"[OAUTH] Google callback received. FRONTEND_URL={FRONTEND_URL}")
+    next_url = f"{FRONTEND_URL}/onboarding"
+    if state:
+        try:
+            state_decoded = base64.urlsafe_b64decode(state.encode()).decode()
+            state_data = json.loads(state_decoded)
+            next_url = state_data.get("next", next_url)
+        except Exception as e:
+            logger.warning(f"Failed to decode state parameter: {e}")
+    
+    logger.info(f"[OAUTH] Google callback received. next_url={next_url}")
     
     if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
         logger.error("[OAUTH] Missing Google OAuth credentials")
-        return RedirectResponse(url=f"{FRONTEND_URL}/connect/callback?provider=google&status=error")
+        return RedirectResponse(url=f"{next_url}?status=error", status_code=302)
     
     try:
         async with httpx.AsyncClient() as client:
@@ -165,7 +191,7 @@ async def google_oauth_callback(code: str, db: Session = Depends(get_db)):
             
             if token_response.status_code != 200:
                 logger.error(f"Failed to exchange Google code: {token_response.text}")
-                return RedirectResponse(url=f"{FRONTEND_URL}/connect/callback?provider=google&status=error")
+                return RedirectResponse(url=f"{next_url}?status=error", status_code=302)
             
             tokens = token_response.json()
             access_token = tokens.get("access_token")
@@ -178,14 +204,14 @@ async def google_oauth_callback(code: str, db: Session = Depends(get_db)):
             
             if userinfo_response.status_code != 200:
                 logger.error(f"Failed to get Google user info: {userinfo_response.text}")
-                return RedirectResponse(url=f"{FRONTEND_URL}/connect/callback?provider=google&status=error")
+                return RedirectResponse(url=f"{next_url}?status=error", status_code=302)
             
             user_info = userinfo_response.json()
             email = user_info.get("email")
             google_sub = user_info.get("sub")
             
             if not email or not google_sub:
-                return RedirectResponse(url=f"{FRONTEND_URL}/connect/callback?provider=google&status=error")
+                return RedirectResponse(url=f"{next_url}?status=error", status_code=302)
             
             user = db.execute(
                 select(User).where(User.email == email)
@@ -206,13 +232,14 @@ async def google_oauth_callback(code: str, db: Session = Depends(get_db)):
             
             app_token = create_access_token(user.email, str(user.id))
             
-            logger.info(f"User authenticated via Google: {email}")
+            logger.info(f"User authenticated via Google: {email}, redirecting to: {next_url}")
             
-            return RedirectResponse(url=f"{FRONTEND_URL}/connect/callback?provider=google&status=success&token={app_token}")
+            redirect_url = f"{next_url}?token={app_token}&status=success"
+            return RedirectResponse(url=redirect_url, status_code=302)
     
     except Exception as e:
         logger.error(f"Google OAuth callback error: {e}")
-        return RedirectResponse(url=f"{FRONTEND_URL}/connect/callback?provider=google&status=error")
+        return RedirectResponse(url=f"{next_url}?status=error", status_code=302)
 
 
 @router.post("/google/disconnect")

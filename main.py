@@ -165,6 +165,19 @@ def scheduled_digest_job():
 @app.on_event("startup")
 def on_startup():
     """Initialize database tables, indexes, constraints, and start scheduler on startup."""
+    # Log OAuth configuration
+    google_redirect_uri = os.getenv("GOOGLE_REDIRECT_URI", "https://api.livinglytics.com/v1/auth/google/callback")
+    print("\n" + "="*60)
+    print("[OAUTH-CONFIG] Google OAuth Redirect URI Configuration")
+    print("="*60)
+    print(f"GOOGLE_REDIRECT_URI = {google_redirect_uri}")
+    print("\nTo configure Google Cloud Console:")
+    print("  1. Go to: https://console.cloud.google.com/apis/credentials")
+    print("  2. Edit your OAuth 2.0 Client ID")
+    print("  3. Add to 'Authorized redirect URIs':")
+    print(f"     {google_redirect_uri}")
+    print("="*60 + "\n")
+    
     # Create ga4_properties table
     try:
         # Import here to ensure all models are loaded
