@@ -61,15 +61,22 @@ async def sync_meta_data(db: Session, user_id: uuid.UUID) -> Dict[str, Any]:
     # TODO: Import and call your existing Meta sync service
     return {"source": "meta", "records": 0, "success": True}
 
-async def run_sync_job(job_id: str, db: Session):
-    """Background task to run sync job"""
+async def run_sync_job(job_id: str):
+    """Background task to run sync job with its own database session"""
+    from db import SessionLocal
+    import logging
+    
     job = SYNC_JOBS.get(job_id)
     if not job:
         return
     
+    # Create a fresh session for this background task
+    db = SessionLocal()
+    
     try:
         job.status = JobStatus.RUNNING
         job.started_at = datetime.utcnow()
+        logging.info(f"[SYNC-JOB] Starting job {job_id}")
         
         results = {
             "sources_synced": [],
@@ -90,6 +97,8 @@ async def run_sync_job(job_id: str, db: Session):
                 user_sources[user_id] = []
             user_sources[user_id].append(source_name)
         
+        logging.info(f"[SYNC-JOB] Found {len(user_sources)} users with connected sources")
+        
         # Sync each user's connected sources
         for user_id, sources in user_sources.items():
             for source in sources:
@@ -107,7 +116,9 @@ async def run_sync_job(job_id: str, db: Session):
                         results["sources_synced"].append(result)
                         results["total_records"] += result.get("records", 0)
                 except Exception as e:
-                    results["errors"].append(f"{source}: {str(e)}")
+                    error_msg = f"{source}: {str(e)}"
+                    results["errors"].append(error_msg)
+                    logging.error(f"[SYNC-JOB] Error syncing {source}: {e}")
         
         # Update last sync timestamp
         last_sync_setting = db.execute(
@@ -128,20 +139,26 @@ async def run_sync_job(job_id: str, db: Session):
             db.add(new_setting)
         
         db.commit()
+        logging.info(f"[SYNC-JOB] Job {job_id} completed successfully - {results['total_records']} records synced")
         
         job.status = JobStatus.COMPLETED
         job.completed_at = datetime.utcnow()
         job.results = results
         
     except Exception as e:
+        logging.error(f"[SYNC-JOB] Job {job_id} failed: {e}", exc_info=True)
         job.status = JobStatus.FAILED
         job.completed_at = datetime.utcnow()
         job.error = str(e)
-        db.rollback()
+        try:
+            db.rollback()
+        except Exception:
+            pass  # Session might already be closed
+    finally:
+        db.close()
 
 @router.post("/all/run")
 async def trigger_sync(
-    db: Session = Depends(get_db),
     _admin: bool = Depends(require_admin_token)
 ):
     """Manually trigger sync for all connected data sources (admin only)"""
@@ -154,8 +171,8 @@ async def trigger_sync(
     )
     SYNC_JOBS[job_id] = job
     
-    # Run sync in background
-    asyncio.create_task(run_sync_job(job_id, db))
+    # Run sync in background (creates its own session)
+    asyncio.create_task(run_sync_job(job_id))
     
     return {
         "job_id": job_id,
@@ -208,18 +225,16 @@ async def get_sync_status(
 # Scheduled sync function (called by APScheduler)
 async def scheduled_sync():
     """Daily scheduled sync at 00:15 America/Los_Angeles"""
-    from db import SessionLocal
+    import logging
     
-    db = SessionLocal()
     try:
         job_id = f"scheduled-{datetime.utcnow().isoformat()}"
         job = SyncJob(job_id=job_id, status=JobStatus.PENDING)
         SYNC_JOBS[job_id] = job
         
-        await run_sync_job(job_id, db)
+        logging.info(f"[SYNC-SCHEDULER] Starting scheduled sync job: {job_id}")
+        await run_sync_job(job_id)
         
-        print(f"[SYNC-SCHEDULER] Completed scheduled sync job: {job_id}")
+        logging.info(f"[SYNC-SCHEDULER] Completed scheduled sync job: {job_id}")
     except Exception as e:
-        print(f"[SYNC-SCHEDULER] Error in scheduled sync: {e}")
-    finally:
-        db.close()
+        logging.error(f"[SYNC-SCHEDULER] Error in scheduled sync: {e}", exc_info=True)

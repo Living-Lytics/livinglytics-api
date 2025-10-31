@@ -1,0 +1,149 @@
+You are coding now. Add endpoints to support a customizable dashboard with widgets, insights, layout persistence, and sync orchestration. Use FastAPI + SQLAlchemy (or your existing DB layer). Implement minimal working versions with clear TODOs for real queries.
+
+1) Install deps (if missing): pip install apscheduler python-dateutil
+
+2) Create routers: app/routers/dashboard.py, app/routers/widgets.py, app/routers/insights.py, app/routers/sync.py and include them in main.py under /v1/....
+
+3) DB tables (run once on startup if not present):
+
+DDL = [
+"""create table if not exists user_dashboard_layouts (
+  user_id uuid primary key,
+  layout jsonb not null,
+  updated_at timestamptz not null default now()
+);""",
+"""create table if not exists app_settings (
+  key text primary key,
+  value jsonb,
+  updated_at timestamptz not null default now()
+);""",
+"""create table if not exists sync_jobs (
+  id uuid primary key default gen_random_uuid(),
+  created_at timestamptz not null default now(),
+  started_at timestamptz, finished_at timestamptz,
+  status text not null default 'pending',
+  message text
+);"""
+]
+
+
+Execute these via your DB engine on startup.
+
+4) /v1/dashboard/meta
+
+@router.get("/dashboard/meta")
+def meta(current_user=Depends(auth_user)):
+    last = get_setting("last_sync")
+    next_ = get_setting("next_sync")
+    connected = get_connected_sources(current_user.id)  # {'ga4':bool,'instagram':bool,'meta':bool}
+    return {"last_sync_at": last, "next_scheduled_at": next_, "connected_sources": connected}
+
+
+5) /v1/dashboard/layout (GET/POST)
+
+@router.get("/dashboard/layout")
+def get_layout(current_user=Depends(auth_user)):
+    row = db.fetchrow("select layout from user_dashboard_layouts where user_id=%s", [current_user.id])
+    return row["layout"] if row else {"widgets":[]}
+
+@router.post("/dashboard/layout")
+def save_layout(body: dict, current_user=Depends(auth_user)):
+    # Validate keys if desired
+    db.execute("""insert into user_dashboard_layouts(user_id,layout) values(%s,%s)
+                  on conflict(user_id) do update set layout=excluded.layout, updated_at=now()""",
+               [current_user.id, json.dumps(body)])
+    return {"ok": True}
+
+
+6) Widget registry and /v1/widgets/{key}
+
+WIDGETS = {}
+def widget(key):
+    def wrap(fn): WIDGETS[key]=fn; return fn
+    return wrap
+
+@router.get("/widgets/{key}")
+def widget_data(key: str, startDate: str, endDate: str, compare: str='off', sources: str=None, current_user=Depends(auth_user)):
+    if key not in WIDGETS: raise HTTPException(404, "unknown widget")
+    return WIDGETS[key](user_id=current_user.id, start=startDate, end=endDate, compare=compare)
+
+@widget("ga4.users")
+def ga4_users(user_id, start, end, compare):
+    # TODO replace with real GA4 aggregate
+    cur = db.fetchval("select coalesce(sum(users),0) from ga4_daily where user_id=%s and date between %s and %s",[user_id,start,end])
+    prev = None
+    if compare!='off':
+        # simple prior-period same length
+        cur_days = (date.fromisoformat(end)-date.fromisoformat(start)).days+1
+        prev_end = date.fromisoformat(start)-timedelta(days=1)
+        prev_start = prev_end - timedelta(days=cur_days-1)
+        prev = db.fetchval("select coalesce(sum(users),0) from ga4_daily where user_id=%s and date between %s and %s",
+                           [user_id, prev_start.isoformat(), prev_end.isoformat()])
+    delta = (None if prev in (None,0) else (cur-prev)/prev)
+    return {"series":[], "stats":{"value":cur, "delta":delta}}
+
+@widget("corr.spend_vs_sessions")
+def spend_vs_sessions(user_id, start, end, compare):
+    spend = db.fetch("select date, sum(spend) v from meta_daily where user_id=%s and date between %s and %s group by 1 order by 1",[user_id,start,end])
+    sess  = db.fetch("select date, sum(sessions) v from ga4_daily where user_id=%s and date between %s and %s group by 1 order by 1",[user_id,start,end])
+    s1=[{"t":r["date"].isoformat(),"v":float(r["v"])} for r in spend]
+    s2=[{"t":r["date"].isoformat(),"v":int(r["v"])} for r in sess]
+    return {"series":[{"name":"Ad Spend","points":s1},{"name":"Sessions","points":s2}], "stats":{}}
+
+
+(Add more widget handlers similarly.)
+
+7) /v1/insights (MVP)
+
+@router.get("/insights")
+def insights(startDate:str, endDate:str, compare:str='off', current_user=Depends(auth_user)):
+    # Minimal rule-based starter; replace with LLM later
+    sess = db.fetchval("select coalesce(sum(sessions),0) from ga4_daily where user_id=%s and date between %s and %s",[current_user.id,startDate,endDate])
+    spend= db.fetchval("select coalesce(sum(spend),0) from meta_daily where user_id=%s and date between %s and %s",[current_user.id,startDate,endDate])
+    items=[{"group":"Cross-channel","bullets":[f"Total sessions: {int(sess)}","Total ad spend: ${spend or 0:.2f}"]}]
+    return {"items":items}
+
+
+8) Sync orchestration (/v1/sync/all/run, /v1/sync/job/{id})
+
+@router.post("/sync/all/run", status_code=202)
+def run_sync(background_tasks: BackgroundTasks, current_user=Depends(auth_user)):
+    job_id = db.fetchval("insert into sync_jobs(status) values('pending') returning id")
+    def work():
+        db.execute("update sync_jobs set status='running', started_at=now() where id=%s",[job_id])
+        try:
+            # TODO: call your GA4/IG/Meta sync services
+            # ga4_sync(); ig_sync(); meta_sync();
+            db.execute("update app_settings set value=jsonb_set(coalesce(value,'{}'::jsonb),'{"+"last_sync"+"}', to_jsonb(now())) where key='last_sync'");
+            db.execute("update sync_jobs set status='success', finished_at=now(), message='ok' where id=%s",[job_id])
+        except Exception as e:
+            db.execute("update sync_jobs set status='failed', finished_at=now(), message=%s where id=%s",[str(e),job_id])
+    background_tasks.add_task(work)
+    return {"job_id": str(job_id)}
+
+@router.get("/sync/job/{job_id}")
+def job(job_id: str, current_user=Depends(auth_user)):
+    row = db.fetchrow("select status, message from sync_jobs where id=%s",[job_id])
+    if not row: raise HTTPException(404,"not found")
+    return dict(row)
+
+
+9) Scheduler (daily at 00:15 PT)
+In main.py startup:
+
+from apscheduler.schedulers.background import BackgroundScheduler
+from zoneinfo import ZoneInfo
+sched = BackgroundScheduler(timezone=ZoneInfo("America/Los_Angeles"))
+def run_daily():
+    # trigger same job as manual route
+    # (call the work() function or enqueue a job)
+    pass
+@app.on_event("startup")
+def on_start():
+    # run DDLs
+    for sql in DDL: db.execute(sql)
+    sched.add_job(run_daily, 'cron', hour=0, minute=15, id='daily_sync', replace_existing=True)
+    sched.start()
+
+
+Wire routers with app.include_router(...) under /v1. Replace db.fetch* with your real DB helpers. Ensure auth dependency exists and returns current_user.id. Return ISO dates.

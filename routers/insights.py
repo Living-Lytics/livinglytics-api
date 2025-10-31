@@ -241,10 +241,10 @@ def generate_rule_based_insights(context: Dict[str, Any], connected_sources: Dic
 
 @router.get("")
 async def get_insights(
+    request: Request,
     start: date = Query(..., description="Start date (YYYY-MM-DD)"),
     end: date = Query(..., description="End date (YYYY-MM-DD)"),
     compare: str = Query("off", description="Compare mode: off, previous, custom"),
-    request: Request = Depends(),
     db: Session = Depends(get_db)
 ) -> InsightsResponse:
     """Generate AI-powered insights based on connected data sources and date range"""

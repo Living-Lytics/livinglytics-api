@@ -446,10 +446,10 @@ WIDGET_HANDLERS = {
 @router.get("/{key}")
 async def get_widget_data(
     key: str,
+    request: Request,
     start: date = Query(..., description="Start date (YYYY-MM-DD)"),
     end: date = Query(..., description="End date (YYYY-MM-DD)"),
     compare: str = Query("off", description="Compare mode: off, previous, custom"),
-    request: Request = Depends(),
     db: Session = Depends(get_db)
 ) -> WidgetResponse:
     """Get widget data for a specific key with date range and compare mode"""
