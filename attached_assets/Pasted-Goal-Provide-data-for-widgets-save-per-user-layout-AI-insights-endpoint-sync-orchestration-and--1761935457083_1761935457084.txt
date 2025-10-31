@@ -1,0 +1,121 @@
+Goal: Provide data for widgets, save per-user layout, AI insights endpoint, sync orchestration, and dashboard meta. Respect filters, compare mode, and connected sources. Use existing GA4/IG/Meta data tables.
+
+Do this exactly:
+
+DB additions (SQL)
+
+-- per-user dashboard layout
+create table if not exists user_dashboard_layouts (
+  user_id uuid primary key,
+  layout jsonb not null,           -- { widgets: [{id, size, ...}], version }
+  updated_at timestamptz not null default now()
+);
+
+-- simple key-value for last/next sync metadata
+create table if not exists app_settings (
+  key text primary key,
+  value jsonb,
+  updated_at timestamptz not null default now()
+);
+
+
+Routing (FastAPI)
+Create routers/dashboard.py, routers/widgets.py, routers/insights.py, routers/sync.py. Mount under /v1/.... All endpoints require auth except optional cron.
+
+Dashboard meta – GET /v1/dashboard/meta
+Returns:
+
+{
+  "last_sync_at": "...",
+  "next_scheduled_at": "...",
+  "connected_sources": { "ga4": true, "instagram": false, "meta": true }
+}
+
+
+Derive connected_sources from your connections table.
+
+Layout endpoints
+
+GET /v1/dashboard/layout → returns user’s layout or { widgets: [] }.
+
+POST /v1/dashboard/layout → body { widgets:[...]}
+
+Validate keys against a server-side widget registry (same keys as frontend).
+
+Upsert into user_dashboard_layouts.
+
+Widget registry & data – GET /v1/widgets/{key}
+
+Implement a registry dict { key: handler_function }.
+
+Each handler receives: user_id, date range, compare mode, sources toggles.
+
+Return shape:
+
+{
+  "series": [ { "name":"...", "points":[{"t":"2025-01-01","v":123}, ...] } ],
+  "stats": { "value": 1234, "delta": 0.12 }  // delta for compare period if requested
+}
+
+
+Handlers to implement:
+
+ga4.users, ga4.sessions, ga4.conv_rate, ga4.traffic_channels
+
+meta.roas, meta.cost_metrics
+
+ig.engagement_rate, ig.content_perf
+
+corr.spend_vs_sessions (join Meta daily spend with GA4 sessions per day; return both series)
+
+Use efficient SQL with GROUP BY date. Respect the selected date range and, if compare != off, also compute prior period stats and deltas.
+
+AI Insights – GET /v1/insights
+
+Input: filters (start, end, compare, sources).
+
+Pipeline (MVP):
+
+Query key aggregates (traffic change, top channels, landing pages, IG engagement spikes, Meta spend vs conversions, ROAS change).
+
+Build a compact JSON context (keep it small).
+
+Feed to your LLM (OpenAI, etc.) with a prompt that asks for short, actionable bullets grouped by theme and only citing connected sources.
+
+Return structure:
+
+{ "items": [
+    { "group": "Cross-channel", "bullets": ["...","..."] },
+    { "group": "Ads", "bullets": ["..."] },
+    { "group": "Traffic", "bullets": ["..."] }
+  ]
+}
+
+
+If LLM not configured, fall back to simple rule-based insights (e.g., “Sessions ↑X% vs last period; consider increasing budget on days A/B when IG engagement peaks.”).
+
+Sync orchestration
+
+Reuse your GA4/IG/Meta sync services.
+
+Daily (00:15 America/Los_Angeles) via APScheduler; manual via POST /v1/sync/all/run returning job_id and job polling at GET /v1/sync/job/{id}.
+
+After sync success: update app_settings['last_sync'].
+
+Security & performance
+
+Auth middleware on all dashboard/widget/insights routes.
+
+Add simple in-memory cache (or Redis if available) per user+filters for 60–120s to keep charts snappy.
+
+Validate key against registry to avoid arbitrary queries.
+
+Acceptance
+
+Widgets return correct series/stats for given filters and compare.
+
+Layout persists per user.
+
+Insights return grouped bullets; degrade gracefully if no data.
+
+Sync endpoints update meta and unblock the UI.
