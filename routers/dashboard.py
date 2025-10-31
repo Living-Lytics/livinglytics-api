@@ -6,9 +6,9 @@ from typing import List, Dict, Any
 from datetime import datetime
 import uuid
 
-from database import get_db
+from db import get_db
 from models import User, DataSource, UserDashboardLayout, AppSetting
-from auth.security import get_current_user_email
+from auth.security import get_current_user_email_optional
 
 router = APIRouter(prefix="/v1/dashboard", tags=["dashboard"])
 
@@ -32,7 +32,9 @@ def get_dashboard_meta(
     db: Session = Depends(get_db)
 ):
     """Get dashboard metadata including last sync, next scheduled sync, and connected sources"""
-    email = get_current_user_email(request)
+    email = get_current_user_email_optional(request)
+    if not email:
+        raise HTTPException(status_code=401, detail="Not authenticated")
     
     user = db.execute(select(User).where(User.email == email)).scalar_one_or_none()
     if not user:
@@ -75,7 +77,9 @@ def get_dashboard_layout(
     db: Session = Depends(get_db)
 ):
     """Get user's dashboard layout"""
-    email = get_current_user_email(request)
+    email = get_current_user_email_optional(request)
+    if not email:
+        raise HTTPException(status_code=401, detail="Not authenticated")
     
     user = db.execute(select(User).where(User.email == email)).scalar_one_or_none()
     if not user:
@@ -97,7 +101,9 @@ def save_dashboard_layout(
     db: Session = Depends(get_db)
 ):
     """Save user's dashboard layout with widget validation"""
-    email = get_current_user_email(request)
+    email = get_current_user_email_optional(request)
+    if not email:
+        raise HTTPException(status_code=401, detail="Not authenticated")
     
     user = db.execute(select(User).where(User.email == email)).scalar_one_or_none()
     if not user:

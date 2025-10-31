@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from db import get_db, engine
-from models import Base, User, Metric, DigestLog, EmailEvent, DataSource, GA4Property
+from models import Base, User, Metric, DigestLog, EmailEvent, DataSource, GA4Property, UserDashboardLayout, AppSetting
 from github import Github, GithubException
 from mailer import send_email_resend
 from scheduler_utils import (
@@ -34,6 +34,7 @@ from scheduler_utils import (
 )
 from auth.router import router as auth_router
 from auth.security import get_current_user_email_optional
+from routers import dashboard, widgets, insights, sync
 
 # Configure structured logging with JSON format
 logging.basicConfig(
@@ -108,6 +109,12 @@ app.add_middleware(
 
 # Mount auth router
 app.include_router(auth_router)
+
+# Mount new routers for widgets, insights, and sync
+app.include_router(dashboard.router)
+app.include_router(widgets.router)
+app.include_router(insights.router)
+app.include_router(sync.router)
 
 # Request ID middleware for structured logging
 @app.middleware("http")
@@ -191,6 +198,14 @@ def on_startup():
     except Exception as e:
         logging.error(f"[STARTUP] Failed to create ga4_properties table: {e}")
     
+    # Create user_dashboard_layouts and app_settings tables
+    try:
+        from models import UserDashboardLayout, AppSetting
+        Base.metadata.create_all(bind=engine, tables=[UserDashboardLayout.__table__, AppSetting.__table__], checkfirst=True)
+        logging.info("[STARTUP] Dashboard layout and app settings tables created/verified")
+    except Exception as e:
+        logging.error(f"[STARTUP] Failed to create dashboard tables: {e}")
+    
     # Add auth columns to users table (idempotent)
     try:
         with engine.connect() as conn:
@@ -238,8 +253,18 @@ def on_startup():
             name='Weekly Digest Send',
             replace_existing=True
         )
+        
+        # Schedule daily sync: Every day at 00:15 America/Los_Angeles
+        scheduler.add_job(
+            sync.scheduled_sync,
+            CronTrigger(hour=0, minute=15, timezone=PT),
+            id='daily_sync',
+            name='Daily Data Sync',
+            replace_existing=True
+        )
+        
         scheduler.start()
-        logging.info("[SCHEDULER] Started with weekly digest job (Monday 07:00 PT)")
+        logging.info("[SCHEDULER] Started with weekly digest (Mon 07:00 PT) and daily sync (00:15 PT)")
     except Exception as e:
         logging.error(f"[SCHEDULER] Failed to start: {str(e)}")
 

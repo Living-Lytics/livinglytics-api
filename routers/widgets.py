@@ -7,9 +7,9 @@ from datetime import datetime, date, timedelta
 from decimal import Decimal
 import uuid
 
-from database import get_db
+from db import get_db
 from models import User, DataSource, Metric
-from auth.security import get_current_user_email
+from auth.security import get_current_user_email_optional
 
 router = APIRouter(prefix="/v1/widgets", tags=["widgets"])
 
@@ -449,11 +449,13 @@ async def get_widget_data(
     start: date = Query(..., description="Start date (YYYY-MM-DD)"),
     end: date = Query(..., description="End date (YYYY-MM-DD)"),
     compare: str = Query("off", description="Compare mode: off, previous, custom"),
-    request: Request = None,
+    request: Request = Depends(),
     db: Session = Depends(get_db)
 ) -> WidgetResponse:
     """Get widget data for a specific key with date range and compare mode"""
-    email = get_current_user_email(request)
+    email = get_current_user_email_optional(request)
+    if not email:
+        raise HTTPException(status_code=401, detail="Not authenticated")
     
     user = db.execute(select(User).where(User.email == email)).scalar_one_or_none()
     if not user:

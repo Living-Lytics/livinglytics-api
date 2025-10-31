@@ -9,9 +9,9 @@ import uuid
 import os
 import json
 
-from database import get_db
+from db import get_db
 from models import User, DataSource, Metric
-from auth.security import get_current_user_email
+from auth.security import get_current_user_email_optional
 
 router = APIRouter(prefix="/v1/insights", tags=["insights"])
 
@@ -138,7 +138,7 @@ async def gather_insights_context(
     
     return context
 
-async def generate_llm_insights(context: Dict[str, Any]) -> List[InsightGroup]:
+async def generate_llm_insights(context: Dict[str, Any]) -> Optional[List[InsightGroup]]:
     """Generate insights using OpenAI LLM"""
     try:
         import openai
@@ -244,11 +244,13 @@ async def get_insights(
     start: date = Query(..., description="Start date (YYYY-MM-DD)"),
     end: date = Query(..., description="End date (YYYY-MM-DD)"),
     compare: str = Query("off", description="Compare mode: off, previous, custom"),
-    request: Request = None,
+    request: Request = Depends(),
     db: Session = Depends(get_db)
 ) -> InsightsResponse:
     """Generate AI-powered insights based on connected data sources and date range"""
-    email = get_current_user_email(request)
+    email = get_current_user_email_optional(request)
+    if not email:
+        raise HTTPException(status_code=401, detail="Not authenticated")
     
     user = db.execute(select(User).where(User.email == email)).scalar_one_or_none()
     if not user:

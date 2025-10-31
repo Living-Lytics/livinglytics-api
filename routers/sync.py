@@ -9,9 +9,8 @@ import uuid
 import asyncio
 import os
 
-from database import get_db
+from db import get_db
 from models import User, DataSource, AppSetting
-from auth.security import get_current_user_email
 
 router = APIRouter(prefix="/v1/sync", tags=["sync"])
 
@@ -209,7 +208,7 @@ async def get_sync_status(
 # Scheduled sync function (called by APScheduler)
 async def scheduled_sync():
     """Daily scheduled sync at 00:15 America/Los_Angeles"""
-    from database import SessionLocal
+    from db import SessionLocal
     
     db = SessionLocal()
     try:
