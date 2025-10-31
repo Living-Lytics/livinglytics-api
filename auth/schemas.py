@@ -17,8 +17,12 @@ class AuthResponse(BaseModel):
     access_token: str | None = None
 
 
+class ProviderStatus(BaseModel):
+    connected: bool
+    email: str | None = None
+
+
 class AuthStatusResponse(BaseModel):
     authenticated: bool
     email: str | None = None
-    google: bool = False
-    instagram: bool = False
+    providers: dict[str, ProviderStatus] = {}

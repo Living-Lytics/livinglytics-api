@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from db import get_db
 from models import User, DataSource
-from auth.schemas import RegisterRequest, LoginRequest, AuthResponse, AuthStatusResponse
+from auth.schemas import RegisterRequest, LoginRequest, AuthResponse, AuthStatusResponse, ProviderStatus
 from auth.security import hash_password, verify_password, create_access_token, get_current_user_email, get_current_user_email_optional
 
 logger = logging.getLogger(__name__)
@@ -90,8 +90,7 @@ async def get_auth_status(
         return AuthStatusResponse(
             authenticated=False,
             email=None,
-            google=False,
-            instagram=False
+            providers={}
         )
     
     user = db.execute(
@@ -102,8 +101,7 @@ async def get_auth_status(
         return AuthStatusResponse(
             authenticated=False,
             email=None,
-            google=False,
-            instagram=False
+            providers={}
         )
     
     google_connected = db.execute(
@@ -123,8 +121,10 @@ async def get_auth_status(
     return AuthStatusResponse(
         authenticated=True,
         email=user.email,
-        google=google_connected,
-        instagram=instagram_connected
+        providers={
+            "google": ProviderStatus(connected=google_connected),
+            "instagram": ProviderStatus(connected=instagram_connected)
+        }
     )
 
 
